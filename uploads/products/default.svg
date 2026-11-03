@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 420" role="img" aria-label="Bakery product placeholder">
+  <rect width="640" height="420" fill="#f5e6d3"/>
+  <circle cx="320" cy="210" r="112" fill="#d4a574"/>
+  <path d="M214 242c8-66 44-104 106-104s98 38 106 104c5 38-24 65-106 65s-111-27-106-65Z" fill="#8b6914"/>
+  <path d="M260 199c17-24 38-36 60-36s43 12 60 36" fill="none" stroke="#fff8f0" stroke-linecap="round" stroke-width="12"/>
+  <path d="M281 220h78" stroke="#fff8f0" stroke-linecap="round" stroke-width="10"/>
+</svg>
