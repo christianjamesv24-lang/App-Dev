@@ -152,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recover'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BakeTrack - Authentication</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20261106">
 </head>
 <body>
     <div class="auth-container">
@@ -185,7 +185,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recover'])) {
                 </div>
                 <div class="form-group">
                     <label><i class="fas fa-lock"></i> Password</label>
-                    <input type="password" name="password" required placeholder="Enter password">
+                    <input type="password" id="signinPassword" name="password" required placeholder="Enter password">
+                    <div class="show-password-control">
+                        <input type="checkbox" id="showSigninPassword" class="show-password-checkbox" data-target-id="signinPassword">
+                        <label for="showSigninPassword">Show password</label>
+                    </div>
                 </div>
                 <button type="submit" name="signin" class="btn btn-primary btn-block">Sign In</button>
             </form>
@@ -209,11 +213,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recover'])) {
                 <div class="form-group">
                     <label><i class="fas fa-lock"></i> Password</label>
                     <input type="password" name="password" id="signupPassword" required placeholder="Create password (min 6 chars)" onkeyup="checkPasswordStrength()">
+                    <div class="show-password-control">
+                        <input type="checkbox" id="showSignupPassword" class="show-password-checkbox" data-target-id="signupPassword">
+                        <label for="showSignupPassword">Show password</label>
+                    </div>
                     <small id="passwordStrength" style="display: block; margin-top: 5px;"></small>
                 </div>
                 <div class="form-group">
                     <label><i class="fas fa-check-circle"></i> Confirm Password</label>
                     <input type="password" name="confirm_password" id="confirmPassword" required placeholder="Confirm your password" onkeyup="checkPasswordMatch()">
+                    <div class="show-password-control">
+                        <input type="checkbox" id="showConfirmPassword" class="show-password-checkbox" data-target-id="confirmPassword">
+                        <label for="showConfirmPassword">Show password</label>
+                    </div>
                     <small id="passwordMatch" style="display: block; margin-top: 5px;"></small>
                 </div>
                 <button type="submit" name="signup" class="btn btn-primary btn-block">Create Account</button>
@@ -232,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['recover'])) {
             <?php endif; ?>
         </div>
     </div>
+    <script src="js/script.js?v=20261106"></script>
     <script>
     // Password strength checker
     function checkPasswordStrength() {
