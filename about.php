@@ -1,6 +1,7 @@
 <?php
 require_once 'includes/functions.php';
 $page = 'about';
+$content = getSiteContent();
 $dashboardUrl = getAuthenticatedDashboardUrl();
 $accountUrl = $dashboardUrl ?? 'auth.php';
 $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
@@ -11,7 +12,7 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BakeTrack - About</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20261111-overview-mobile">
 </head>
 <body>
     <div class="container">
@@ -33,12 +34,12 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
 
         <section class="hero">
             <div class="hero-content">
-                <h1>Our Story</h1>
-                <p>Since 2020, BakeTrack has been serving the community with love and passion for baking.</p>
-                <p>Every product is made with carefully selected ingredients and traditional techniques.</p>
+                <h1><?= htmlspecialchars($content['about_story_title'], ENT_QUOTES, 'UTF-8') ?></h1>
+                <p><?= htmlspecialchars($content['about_story_paragraph_1'], ENT_QUOTES, 'UTF-8') ?></p>
+                <p><?= htmlspecialchars($content['about_story_paragraph_2'], ENT_QUOTES, 'UTF-8') ?></p>
                 <div class="hero-buttons">
-                    <a href="index.php" class="btn btn-primary">Home</a>
-                    <a href="<?= htmlspecialchars($accountUrl, ENT_QUOTES, 'UTF-8') ?>" class="btn btn-secondary"><?= $dashboardUrl ? 'Open dashboard' : 'Join Us' ?></a>
+                    <a href="index.php" class="btn btn-primary"><?= htmlspecialchars($content['about_home_button'], ENT_QUOTES, 'UTF-8') ?></a>
+                    <a href="<?= htmlspecialchars($accountUrl, ENT_QUOTES, 'UTF-8') ?>" class="btn btn-secondary"><?= $dashboardUrl ? 'Open dashboard' : htmlspecialchars($content['about_join_button'], ENT_QUOTES, 'UTF-8') ?></a>
                 </div>
             </div>
             <div class="hero-image">
@@ -50,24 +51,24 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
             <div class="about-grid">
                 <div class="about-item">
                     <i class="fas fa-seedling"></i>
-                    <h3>Quality Ingredients</h3>
-                    <p>We use only the finest ingredients</p>
+                    <h3><?= htmlspecialchars($content['about_value_1_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                    <p><?= htmlspecialchars($content['about_value_1_description'], ENT_QUOTES, 'UTF-8') ?></p>
                 </div>
                 <div class="about-item">
                     <i class="fas fa-hand-holding-heart"></i>
-                    <h3>Community Love</h3>
-                    <p>Supporting local farmers and suppliers</p>
+                    <h3><?= htmlspecialchars($content['about_value_2_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                    <p><?= htmlspecialchars($content['about_value_2_description'], ENT_QUOTES, 'UTF-8') ?></p>
                 </div>
                 <div class="about-item">
                     <i class="fas fa-award"></i>
-                    <h3>Excellence</h3>
-                    <p>Recognized for quality and service</p>
+                    <h3><?= htmlspecialchars($content['about_value_3_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                    <p><?= htmlspecialchars($content['about_value_3_description'], ENT_QUOTES, 'UTF-8') ?></p>
                 </div>
             </div>
         </section>
 
         <footer>
-            <p>&copy; 2026 BakeTrack - Your favorite bakery shop</p>
+            <p>&copy; 2026 BakeTrack - <?= htmlspecialchars($content['footer_text'], ENT_QUOTES, 'UTF-8') ?></p>
         </footer>
     </div>
     <script src="js/script.js"></script>

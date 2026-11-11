@@ -1,6 +1,7 @@
 <?php
 require_once 'includes/functions.php';
 $page = 'home';
+$content = getSiteContent();
 $dashboardUrl = getAuthenticatedDashboardUrl();
 $accountUrl = $dashboardUrl ?? 'auth.php';
 $getStartedUrl = $dashboardUrl ?? 'auth.php?mode=signup';
@@ -12,7 +13,7 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BakeTrack - Home</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=20261111-overview-mobile">
 </head>
 <body class="overview-default" data-default-theme="true">
     <div class="container">
@@ -36,10 +37,10 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
         <!-- Hero Section -->
         <section class="hero">
             <div class="hero-content">
-                <h1>Welcome to BakeTrack</h1>
-                <p>Where every bite tells a story of love and tradition</p>
+                <h1><?= htmlspecialchars($content['home_title'], ENT_QUOTES, 'UTF-8') ?></h1>
+                <p><?= htmlspecialchars($content['home_subtitle'], ENT_QUOTES, 'UTF-8') ?></p>
                 <div class="hero-buttons">
-                    <a href="<?= htmlspecialchars($getStartedUrl, ENT_QUOTES, 'UTF-8') ?>" class="btn btn-primary"><?= $dashboardUrl ? 'Open dashboard' : 'Get Started' ?></a>
+                    <a href="<?= htmlspecialchars($getStartedUrl, ENT_QUOTES, 'UTF-8') ?>" class="btn btn-primary"><?= $dashboardUrl ? 'Open dashboard' : htmlspecialchars($content['home_cta_label'], ENT_QUOTES, 'UTF-8') ?></a>
                 </div>
             </div>
             <div class="hero-image">
@@ -51,24 +52,24 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
         <section class="features">
             <div class="feature-card">
                 <i class="fas fa-bread-slice"></i>
-                <h3>Fresh Baked</h3>
-                <p>Daily fresh bread and pastries</p>
+                <h3><?= htmlspecialchars($content['home_feature_1_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                <p><?= htmlspecialchars($content['home_feature_1_description'], ENT_QUOTES, 'UTF-8') ?></p>
             </div>
             <div class="feature-card">
                 <i class="fas fa-heart"></i>
-                <h3>Made with Love</h3>
-                <p>Traditional recipes with a modern twist</p>
+                <h3><?= htmlspecialchars($content['home_feature_2_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                <p><?= htmlspecialchars($content['home_feature_2_description'], ENT_QUOTES, 'UTF-8') ?></p>
             </div>
             <div class="feature-card">
                 <i class="fas fa-store"></i>
-                <h3>Visit Us</h3>
-                <p>Experience the warmth of our bakery</p>
+                <h3><?= htmlspecialchars($content['home_feature_3_title'], ENT_QUOTES, 'UTF-8') ?></h3>
+                <p><?= htmlspecialchars($content['home_feature_3_description'], ENT_QUOTES, 'UTF-8') ?></p>
             </div>
         </section>
 
         <!-- Footer -->
         <footer>
-            <p>&copy; 2026 BakeTrack - Your favorite bakery shop</p>
+            <p>&copy; 2026 BakeTrack - <?= htmlspecialchars($content['footer_text'], ENT_QUOTES, 'UTF-8') ?></p>
         </footer>
     </div>
     <script src="js/script.js"></script>

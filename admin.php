@@ -4,13 +4,24 @@ require_once 'includes/functions.php';
 requireAdmin();
 
 $user_id = $_SESSION['user_id'];
-$allowed_pages = ['dashboard', 'bakery', 'uploads', 'orders', 'transactions', 'messages', 'inventory', 'database', 'settings'];
+$allowed_pages = ['dashboard', 'bakery', 'uploads', 'orders', 'transactions', 'messages', 'inventory', 'database', 'settings', 'content'];
 $requested_page = $_GET['page'] ?? 'dashboard';
 if (!is_string($requested_page) || !in_array($requested_page, $allowed_pages, true)) {
     header('Location: admin.php?page=dashboard');
     exit();
 }
 $page = $requested_page;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_site_content'])) {
+    try {
+        saveSiteContent($_POST['site_content'] ?? null);
+        header('Location: admin.php?page=content&saved=1');
+    } catch (Throwable $error) {
+        error_log('Admin site content update failed: ' . $error->getMessage());
+        header('Location: admin.php?page=content&error=content');
+    }
+    exit();
+}
 
 // Get user info
 $user = $conn->query("SELECT * FROM users WHERE id = $user_id")->fetch_assoc();
@@ -176,6 +187,7 @@ for ($i = 1; $i <= 12; $i++) {
     $result = $conn->query("SELECT SUM(quantity) as total FROM products WHERE MONTH(date_added)=$i AND YEAR(date_added)=$report_year");
     $monthly_data[$i] = $result->fetch_assoc()['total'] ?? 0;
 }
+$siteContent = $page === 'content' ? getSiteContent(true) : [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -221,6 +233,9 @@ for ($i = 1; $i <= 12; $i++) {
                 </a>
                 <a href="?page=settings" class="<?= $page === 'settings' ? 'active' : '' ?>" <?= $page === 'settings' ? 'aria-current="page"' : '' ?>>
                     <i class="fas fa-cog"></i> Settings
+                </a>
+                <a href="?page=content" class="<?= $page === 'content' ? 'active' : '' ?>" <?= $page === 'content' ? 'aria-current="page"' : '' ?>>
+                    <i class="fas fa-edit"></i> Site Content
                 </a>
                 <a href="logout.php" class="logout-btn">
                     <i class="fas fa-sign-out-alt"></i> Logout
@@ -790,6 +805,67 @@ for ($i = 1; $i <= 12; $i++) {
                 form.submit();
             }
             </script>
+            <?php endif; ?>
+
+            <!-- ==================== SITE CONTENT ==================== -->
+            <?php if ($page === 'content'):
+            $contentFields = [
+                'Overview page' => [
+                    'home_title' => 'Main heading',
+                    'home_subtitle' => 'Introductory text',
+                    'home_cta_label' => 'Get Started button',
+                    'home_feature_1_title' => 'Feature 1 title',
+                    'home_feature_1_description' => 'Feature 1 description',
+                    'home_feature_2_title' => 'Feature 2 title',
+                    'home_feature_2_description' => 'Feature 2 description',
+                    'home_feature_3_title' => 'Feature 3 title',
+                    'home_feature_3_description' => 'Feature 3 description'
+                ],
+                'About page' => [
+                    'about_story_title' => 'Story heading',
+                    'about_story_paragraph_1' => 'Story paragraph 1',
+                    'about_story_paragraph_2' => 'Story paragraph 2',
+                    'about_home_button' => 'Home button',
+                    'about_join_button' => 'Join Us button',
+                    'about_value_1_title' => 'Value 1 title',
+                    'about_value_1_description' => 'Value 1 description',
+                    'about_value_2_title' => 'Value 2 title',
+                    'about_value_2_description' => 'Value 2 description',
+                    'about_value_3_title' => 'Value 3 title',
+                    'about_value_3_description' => 'Value 3 description'
+                ],
+                'Shared footer' => [
+                    'footer_text' => 'Footer text'
+                ]
+            ];
+            ?>
+            <div class="page-header">
+                <h1>Site Content</h1>
+                <p>Edit the text displayed on the public overview and about pages.</p>
+            </div>
+            <?php if (isset($_GET['saved'])): ?>
+                <div class="alert alert-success" role="status">Site content updated.</div>
+            <?php elseif (isset($_GET['error'])): ?>
+                <div class="alert alert-danger" role="alert">Unable to update site content. Please check the fields and try again.</div>
+            <?php endif; ?>
+            <div class="settings-container site-content-container">
+                <div class="settings-card site-content-card">
+                    <form method="POST">
+                        <?php foreach ($contentFields as $group => $fields): ?>
+                            <fieldset class="site-content-group">
+                                <legend><?= htmlspecialchars($group, ENT_QUOTES, 'UTF-8') ?></legend>
+                                <?php foreach ($fields as $key => $label): ?>
+                                    <div class="form-group">
+                                        <label for="site-content-<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></label>
+                                        <textarea id="site-content-<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>" name="site_content[<?= htmlspecialchars($key, ENT_QUOTES, 'UTF-8') ?>]" rows="<?= str_contains($key, 'paragraph') || str_contains($key, 'description') || $key === 'footer_text' ? '3' : '2' ?>" maxlength="2000" required><?= htmlspecialchars($siteContent[$key], ENT_QUOTES, 'UTF-8') ?></textarea>
+                                    </div>
+                                <?php endforeach; ?>
+                            </fieldset>
+                        <?php endforeach; ?>
+                        <button type="submit" name="save_site_content" value="1" class="btn btn-primary">Save Site Content</button>
+                    </form>
+                </div>
+            </div>
             <?php endif; ?>
 
             <!-- ==================== SETTINGS ==================== -->

@@ -188,6 +188,18 @@ CREATE TABLE `settings` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `site_content`
+--
+
+CREATE TABLE `site_content` (
+  `content_key` varchar(100) NOT NULL,
+  `content_value` text NOT NULL,
+  PRIMARY KEY (`content_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `transactions`
 --
 
@@ -210,6 +222,22 @@ INSERT INTO `transactions` (`id`, `user_id`, `order_id`, `amount`, `type`, `stat
 (2, 6, 6, 30.00, 'sale', 'completed', '', '2026-10-31 11:11:53'),
 (3, 5, 7, 60.00, 'sale', 'completed', '', '2026-10-31 11:12:18'),
 (4, 5, 8, 60.00, 'sale', 'completed', '', '2026-10-31 11:12:22');
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `password_reset_tokens`
+--
+
+CREATE TABLE `password_reset_tokens` (
+  `token_hash` char(64) NOT NULL,
+  `user_id` int NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `expires_at` datetime NOT NULL,
+  PRIMARY KEY (`token_hash`),
+  KEY `user_id` (`user_id`),
+  KEY `expires_at` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- --------------------------------------------------------
 

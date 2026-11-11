@@ -2,6 +2,8 @@
   "name": "baketrack",
   "private": true,
   "scripts": {
-    "dev": "php -S 127.0.0.1:8000 -t ."
+    "dev": "php -S 127.0.0.1:8000 -t .",
+    "serve": "php -S 127.0.0.1:8000 -t .",
+    "start": "php -S 127.0.0.1:8000 -t ."
   }
 }

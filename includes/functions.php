@@ -6,6 +6,26 @@
 
 require_once dirname(__DIR__) . '/config.php';
 
+$composerAutoload = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+if (is_file($composerAutoload)) {
+    require_once $composerAutoload;
+    if (class_exists(\Dotenv\Dotenv::class)) {
+        \Dotenv\Dotenv::createImmutable(dirname(__DIR__))->safeLoad();
+    }
+}
+
+function getApplicationEnvironment($name, $default = '') {
+    if (isset($_ENV[$name]) && is_string($_ENV[$name])) {
+        return $_ENV[$name];
+    }
+    if (isset($_SERVER[$name]) && is_string($_SERVER[$name])) {
+        return $_SERVER[$name];
+    }
+
+    $value = getenv($name);
+    return $value === false ? $default : (string) $value;
+}
+
 // ============================
 // USER FUNCTIONS
 // ============================
@@ -916,6 +936,213 @@ function generateToken($length = 32) {
 }
 
 /**
+ * Ensure password reset storage exists for installations not yet re-imported from SQL.
+ */
+function ensurePasswordResetTable() {
+    global $conn;
+
+    $created = $conn->query("CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        token_hash CHAR(64) NOT NULL PRIMARY KEY,
+        user_id INT NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at DATETIME NOT NULL,
+        KEY user_id (user_id),
+        KEY expires_at (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+
+    if (!$created) {
+        throw new RuntimeException('Unable to prepare password reset storage.');
+    }
+}
+
+/**
+ * Send a one-hour password reset link without revealing whether an email exists.
+ */
+function sendPasswordResetEmail($email) {
+    global $conn;
+
+    ensurePasswordResetTable();
+    $conn->query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
+    $appUrl = rtrim(getApplicationEnvironment('APP_URL'), '/');
+    $mailFrom = trim(getApplicationEnvironment('MAIL_FROM'));
+    $smtpUsername = trim(getApplicationEnvironment('SMTP_USERNAME'));
+    $smtpPassword = getApplicationEnvironment('SMTP_PASSWORD');
+    $smtpHost = trim(getApplicationEnvironment('SMTP_HOST', 'smtp.gmail.com'));
+    $smtpPort = filter_var(getApplicationEnvironment('SMTP_PORT', '587'), FILTER_VALIDATE_INT);
+    $smtpSecure = strtolower(trim(getApplicationEnvironment('SMTP_SECURE', 'tls')));
+    $smtpAuthSetting = getApplicationEnvironment('SMTP_AUTH', 'true');
+    $smtpAuth = $smtpAuthSetting === false
+        ? true
+        : filter_var($smtpAuthSetting, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    $appUrlParts = filter_var($appUrl, FILTER_VALIDATE_URL) ? parse_url($appUrl) : false;
+    $localSmtpHost = in_array(strtolower($smtpHost), ['localhost', '127.0.0.1', '::1'], true);
+    if (
+        !$appUrlParts
+        || !isset($appUrlParts['scheme'], $appUrlParts['host'])
+        || !in_array(strtolower($appUrlParts['scheme']), ['http', 'https'], true)
+        || array_intersect(['user', 'pass', 'query', 'fragment'], array_keys($appUrlParts)) !== []
+        || !filter_var($mailFrom, FILTER_VALIDATE_EMAIL)
+        || $smtpHost === ''
+        || $smtpPort === false
+        || $smtpPort < 1
+        || $smtpPort > 65535
+        || !in_array($smtpSecure, ['tls', 'ssl', 'none'], true)
+        || $smtpAuth === null
+        || ($smtpAuth && (!filter_var($smtpUsername, FILTER_VALIDATE_EMAIL) || $smtpPassword === ''))
+        || ($smtpSecure === 'none' && (!$localSmtpHost || $smtpAuth))
+    ) {
+        throw new RuntimeException('Password recovery email settings are missing or invalid.');
+    }
+
+    $autoloadPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+    if (!is_file($autoloadPath)) {
+        throw new RuntimeException('Composer dependencies are missing; run composer install.');
+    }
+    require_once $autoloadPath;
+    if (!class_exists(\PHPMailer\PHPMailer\PHPMailer::class)) {
+        throw new RuntimeException('PHPMailer is not installed; run composer install.');
+    }
+
+    $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE email = ? LIMIT 1');
+    $stmt->bind_param('s', $email);
+    $stmt->execute();
+    $user = $stmt->get_result()->fetch_assoc();
+
+    if (!$user) {
+        return;
+    }
+
+    $recent = $conn->prepare(
+        'SELECT token_hash FROM password_reset_tokens
+         WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+         LIMIT 1'
+    );
+    $recent->bind_param('i', $user['id']);
+    $recent->execute();
+    if ($recent->get_result()->num_rows > 0) {
+        return;
+    }
+
+    $token = bin2hex(random_bytes(32));
+    $tokenHash = hash('sha256', $token);
+    $delete = $conn->prepare('DELETE FROM password_reset_tokens WHERE user_id = ?');
+    $delete->bind_param('i', $user['id']);
+    $delete->execute();
+
+    $insert = $conn->prepare(
+        'INSERT INTO password_reset_tokens (token_hash, user_id, expires_at)
+         VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 1 HOUR))'
+    );
+    $insert->bind_param('si', $tokenHash, $user['id']);
+    $insert->execute();
+
+    $resetUrl = $appUrl . '/auth.php?mode=reset&token=' . rawurlencode($token);
+    $message = "Hello {$user['fullname']},\n\n"
+        . "We received a request to reset your BakeTrack password. Use this link within one hour:\n\n"
+        . $resetUrl . "\n\n"
+        . "If you did not request this, you can ignore this email.";
+
+    try {
+        $mailer = new \PHPMailer\PHPMailer\PHPMailer(true);
+        $mailer->isSMTP();
+        $mailer->Host = $smtpHost;
+        $mailer->SMTPAuth = $smtpAuth;
+        if ($smtpAuth) {
+            $mailer->Username = $smtpUsername;
+            $mailer->Password = $smtpPassword;
+        }
+        $mailer->SMTPSecure = match ($smtpSecure) {
+            'tls' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS,
+            'ssl' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS,
+            default => ''
+        };
+        $mailer->Port = $smtpPort;
+        $mailer->CharSet = 'UTF-8';
+        $mailer->setFrom($mailFrom, 'BakeTrack');
+        $mailer->addAddress($user['email'], $user['fullname']);
+        $mailer->Subject = 'BakeTrack password reset';
+        $mailer->Body = $message;
+        $mailer->send();
+    } catch (Throwable $mailError) {
+        $remove = $conn->prepare('DELETE FROM password_reset_tokens WHERE token_hash = ?');
+        $remove->bind_param('s', $tokenHash);
+        $remove->execute();
+        $diagnostic = $mailer->ErrorInfo !== '' ? $mailer->ErrorInfo : $mailError->getMessage();
+        $secretsToRedact = array_filter(
+            [$smtpUsername, $smtpPassword, $user['email']],
+            static fn($value) => $value !== ''
+        );
+        $diagnostic = str_replace($secretsToRedact, '[redacted]', $diagnostic);
+        error_log('Gmail SMTP reset mail failed: ' . $diagnostic);
+        throw new RuntimeException('The password reset email could not be sent through Gmail SMTP.', 0, $mailError);
+    }
+}
+
+/**
+ * Check whether a raw reset token is still active.
+ */
+function isPasswordResetTokenValid($token) {
+    global $conn;
+
+    if (!is_string($token) || !preg_match('/\A[a-f0-9]{64}\z/', $token)) {
+        return false;
+    }
+
+    ensurePasswordResetTable();
+    $tokenHash = hash('sha256', $token);
+    $stmt = $conn->prepare(
+        'SELECT 1 FROM password_reset_tokens WHERE token_hash = ? AND expires_at > NOW() LIMIT 1'
+    );
+    $stmt->bind_param('s', $tokenHash);
+    $stmt->execute();
+    return $stmt->get_result()->num_rows === 1;
+}
+
+/**
+ * Replace a password once and invalidate every reset token for that account.
+ */
+function resetPasswordWithToken($token, $password) {
+    global $conn;
+
+    if (!is_string($token) || !preg_match('/\A[a-f0-9]{64}\z/', $token)) {
+        return false;
+    }
+
+    ensurePasswordResetTable();
+    $tokenHash = hash('sha256', $token);
+    $conn->begin_transaction();
+    try {
+        $stmt = $conn->prepare(
+            'SELECT user_id FROM password_reset_tokens
+             WHERE token_hash = ? AND expires_at > NOW() FOR UPDATE'
+        );
+        $stmt->bind_param('s', $tokenHash);
+        $stmt->execute();
+        $reset = $stmt->get_result()->fetch_assoc();
+        if (!$reset) {
+            $conn->rollback();
+            return false;
+        }
+
+        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+        $update = $conn->prepare('UPDATE users SET password = ? WHERE id = ?');
+        $update->bind_param('si', $passwordHash, $reset['user_id']);
+        if (!$update->execute() || $update->affected_rows !== 1) {
+            throw new RuntimeException('The password could not be updated for the reset account.');
+        }
+
+        $delete = $conn->prepare('DELETE FROM password_reset_tokens WHERE user_id = ?');
+        $delete->bind_param('i', $reset['user_id']);
+        $delete->execute();
+        $conn->commit();
+        return true;
+    } catch (Throwable $error) {
+        $conn->rollback();
+        throw $error;
+    }
+}
+
+/**
  * Check if request is AJAX
  */
 function isAjaxRequest() {
@@ -1123,6 +1350,106 @@ function updateUserSettings($user_id, $darkmode) {
     $stmt = $conn->prepare("UPDATE settings SET darkmode = ? WHERE user_id = ?");
     $stmt->bind_param("ii", $darkmode, $user_id);
     return $stmt->execute();
+}
+
+// ============================
+// PUBLIC SITE CONTENT
+// ============================
+
+/**
+ * Get editable overview and about page text, falling back to the original copy.
+ */
+function getSiteContent($ensureTable = false) {
+    global $conn;
+    static $tableReady = false;
+
+    $content = [
+        'home_title' => 'Welcome to BakeTrack',
+        'home_subtitle' => 'Where every bite tells a story of love and tradition',
+        'home_cta_label' => 'Get Started',
+        'home_feature_1_title' => 'Fresh Baked',
+        'home_feature_1_description' => 'Daily fresh bread and pastries',
+        'home_feature_2_title' => 'Made with Love',
+        'home_feature_2_description' => 'Traditional recipes with a modern twist',
+        'home_feature_3_title' => 'Visit Us',
+        'home_feature_3_description' => 'Experience the warmth of our bakery',
+        'about_story_title' => 'Our Story',
+        'about_story_paragraph_1' => 'Since 2020, BakeTrack has been serving the community with love and passion for baking.',
+        'about_story_paragraph_2' => 'Every product is made with carefully selected ingredients and traditional techniques.',
+        'about_home_button' => 'Home',
+        'about_join_button' => 'Join Us',
+        'about_value_1_title' => 'Quality Ingredients',
+        'about_value_1_description' => 'We use only the finest ingredients',
+        'about_value_2_title' => 'Community Love',
+        'about_value_2_description' => 'Supporting local farmers and suppliers',
+        'about_value_3_title' => 'Excellence',
+        'about_value_3_description' => 'Recognized for quality and service',
+        'footer_text' => 'Your favorite bakery shop'
+    ];
+
+    if (!$tableReady && $ensureTable) {
+        $conn->query("CREATE TABLE IF NOT EXISTS site_content (
+            content_key VARCHAR(100) NOT NULL PRIMARY KEY,
+            content_value TEXT NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        $tableReady = true;
+    }
+
+    if (!$tableReady) {
+        $tableCheck = $conn->query(
+            "SELECT 1 FROM information_schema.tables
+             WHERE table_schema = DATABASE() AND table_name = 'site_content'"
+        );
+        if ($tableCheck->num_rows === 0) {
+            return $content;
+        }
+        $tableReady = true;
+    }
+
+    $result = $conn->query('SELECT content_key, content_value FROM site_content');
+    while ($row = $result->fetch_assoc()) {
+        if (array_key_exists($row['content_key'], $content)) {
+            $content[$row['content_key']] = $row['content_value'];
+        }
+    }
+
+    return $content;
+}
+
+/**
+ * Save only known public page fields and reject oversized or malformed values.
+ */
+function saveSiteContent($submittedContent) {
+    global $conn;
+
+    if (!is_array($submittedContent)) {
+        throw new InvalidArgumentException('Site content must be submitted as a field list.');
+    }
+
+    $defaults = getSiteContent(true);
+    $conn->begin_transaction();
+    try {
+        $stmt = $conn->prepare(
+            'INSERT INTO site_content (content_key, content_value) VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE content_value = VALUES(content_value)'
+        );
+        foreach (array_keys($defaults) as $key) {
+            if (!array_key_exists($key, $submittedContent) || !is_string($submittedContent[$key])) {
+                throw new InvalidArgumentException('A site content field is missing or invalid.');
+            }
+            if (mb_strlen($submittedContent[$key], 'UTF-8') > 2000) {
+                throw new InvalidArgumentException('Site content fields cannot exceed 2000 characters.');
+            }
+
+            $value = $submittedContent[$key];
+            $stmt->bind_param('ss', $key, $value);
+            $stmt->execute();
+        }
+        $conn->commit();
+    } catch (Throwable $error) {
+        $conn->rollback();
+        throw $error;
+    }
 }
 
 // ============================

@@ -14,6 +14,16 @@ function toggleDarkMode() {
 
 // Load Dark Mode Preference
 document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.show-password-checkbox').forEach(checkbox => {
+        const targetId = checkbox.getAttribute('data-target-id');
+        const input = targetId ? document.getElementById(targetId) : null;
+        if (!input) return;
+
+        checkbox.addEventListener('change', function() {
+            input.type = this.checked ? 'text' : 'password';
+        });
+    });
+
     document.querySelectorAll('img[src^="uploads/products/"]').forEach(image => {
         image.addEventListener('error', function() {
             if (this.dataset.fallbackApplied) return;
