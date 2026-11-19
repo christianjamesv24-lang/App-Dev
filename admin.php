@@ -36,12 +36,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
     $action = $_POST['user_action'];
     $updated = false;
 
-    if ($target_id && $action === 'update_name') {
+    if ($target_id && $action === 'update_user') {
         $fullname = trim($_POST['fullname'] ?? '');
-        if ($fullname !== '') {
-            $user_stmt = $conn->prepare("UPDATE users SET fullname = ? WHERE id = ?");
-            $user_stmt->bind_param('si', $fullname, $target_id);
-            $updated = $user_stmt->execute();
+        $email = trim($_POST['email'] ?? '');
+        $role = $_POST['role'] ?? '';
+        if ($fullname !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)
+            && in_array($role, ['admin', 'assistant', 'customer'], true)
+            && ($target_id !== (int) $user_id || $role === 'admin')) {
+            $email_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $email_stmt->bind_param('si', $email, $target_id);
+            $email_stmt->execute();
+            if ($email_stmt->get_result()->num_rows === 0) {
+                $user_stmt = $conn->prepare("UPDATE users SET fullname = ?, email = ?, role = ? WHERE id = ?");
+                $user_stmt->bind_param('sssi', $fullname, $email, $role, $target_id);
+                $updated = $user_stmt->execute();
+            }
         }
     } elseif ($target_id && $action === 'change_password') {
         $password = $_POST['password'] ?? '';
@@ -179,6 +188,9 @@ $stats = [
         COUNT(*) as total 
         FROM transactions")->fetch_assoc()
 ];
+$stats['efficiency'] = (int) $stats['transactions']['total'] > 0
+    ? round(((int) $stats['transactions']['successful'] / (int) $stats['transactions']['total']) * 100)
+    : 0;
 
 // Get inventory data for chart
 $monthly_data = [];
@@ -273,6 +285,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     <i class="fas fa-star"></i>
                     <h3><?= number_format($stats['reviews'], 1) ?>★</h3>
                     <p>Reviews</p>
+                </div>
+                <div class="stat-card" style="border-left: 4px solid #4CAF50;">
+                    <i class="fas fa-chart-line"></i>
+                    <h3><?= $stats['efficiency'] ?>%</h3>
+                    <p>System Efficiency</p>
                 </div>
             </div>
 
@@ -726,7 +743,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                             <td><span class="role-badge <?= $u['role'] ?>"><?= ucfirst($u['role']) ?></span></td>
                             <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
                             <td>
-                                <button class="btn-small btn-edit" onclick='editUser(<?= (int) $u['id'] ?>, <?= htmlspecialchars(json_encode($u['username'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['fullname'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>)'>
+                                <button class="btn-small btn-edit" onclick='editUser(<?= (int) $u['id'] ?>, <?= htmlspecialchars(json_encode($u['username'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['fullname'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['email'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['role'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>)'>
                                     <i class="fas fa-edit"></i>
                                 </button>
                                 <button class="btn-small btn-danger" onclick="changePassword(<?= $u['id'] ?>)">
@@ -768,9 +785,28 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             
             function editUser(id, username, fullname, email, role) {
                 const newFullname = prompt('Edit Full Name:', fullname);
-                if (newFullname && newFullname !== fullname) {
-                    submitUserAction(id, 'update_name', 'fullname', newFullname);
-                }
+                if (newFullname === null || newFullname.trim() === '') return;
+                const newEmail = prompt('Edit Email Address:', email);
+                if (newEmail === null || newEmail.trim() === '') return;
+                const newRole = prompt('Edit Role (admin, assistant, customer):', role);
+                if (newRole === null) return;
+                submitUserUpdate(id, newFullname.trim(), newEmail.trim(), newRole.trim().toLowerCase());
+            }
+
+            function submitUserUpdate(id, fullname, email, role) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'admin.php?page=database';
+                const fields = {user_id: id, user_action: 'update_user', fullname, email, role};
+                Object.entries(fields).forEach(([name, value]) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = name;
+                    input.value = value;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                form.submit();
             }
             
             function changePassword(id) {
@@ -875,6 +911,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 $fullname = trim($_POST['fullname'] ?? '');
                 $birthdate = trim($_POST['birthdate'] ?? '');
                 $darkmode = isset($_POST['darkmode']) ? 1 : 0;
+                $anonymous = isset($_POST['anonymous']) ? 1 : 0;
 
                 if ($fullname === '') {
                     echo "<script>alert('Full name is required.'); window.location='admin.php?page=settings';</script>";
@@ -882,11 +919,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 }
 
                 if ($birthdate === '') {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('sii', $fullname, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
                 } else {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('ssii', $fullname, $birthdate, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('ssiii', $fullname, $birthdate, $darkmode, $anonymous, $user_id);
                 }
 
                 if ($update_stmt->execute()) {
@@ -934,6 +971,13 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                                 <label>Dark Mode</label>
                                 <div class="toggle-switch">
                                     <input type="checkbox" name="darkmode" <?= $user['darkmode'] ? 'checked' : '' ?>>
+                                    <span class="slider"></span>
+                                </div>
+                            </div>
+                            <div class="toggle-group">
+                                <label>Anonymous Mode</label>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" name="anonymous" <?= $user['anonymous'] ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </div>
                             </div>

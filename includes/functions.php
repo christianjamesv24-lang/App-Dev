@@ -6,14 +6,6 @@
 
 require_once dirname(__DIR__) . '/config.php';
 
-$composerAutoload = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
-if (is_file($composerAutoload)) {
-    require_once $composerAutoload;
-    if (class_exists(\Dotenv\Dotenv::class)) {
-        \Dotenv\Dotenv::createImmutable(dirname(__DIR__))->safeLoad();
-    }
-}
-
 function getApplicationEnvironment($name, $default = '') {
     if (isset($_ENV[$name]) && is_string($_ENV[$name])) {
         return $_ENV[$name];
@@ -458,10 +450,37 @@ function transitionOrder($order_id, $status, $reason = '') {
 /**
  * Create an in-person sale using current inventory prices and stock levels.
  */
-function createCashSale($user_id, $items, $payment) {
+function ensureOrderCustomerNameColumn() {
+    global $conn;
+    static $checked = false;
+    if ($checked) {
+        return;
+    }
+
+    $result = $conn->query("SHOW COLUMNS FROM orders LIKE 'customer_name'");
+    if (!$result) {
+        throw new RuntimeException('Unable to check the order customer field.');
+    }
+    if ($result->num_rows === 0 && !$conn->query("ALTER TABLE orders ADD COLUMN customer_name VARCHAR(255) DEFAULT NULL AFTER user_id")) {
+        throw new RuntimeException('Unable to add the order customer field.');
+    }
+    $checked = true;
+}
+
+function createCashSale($user_id, $items, $payment, $customerName = '') {
     global $conn;
     if ($user_id <= 0 || !is_array($items) || $items === [] || !is_numeric($payment)) {
         throw new InvalidArgumentException('Add products and a valid payment amount.');
+    }
+    if (!is_string($customerName)) {
+        throw new InvalidArgumentException('Enter a valid customer name.');
+    }
+    $customerName = trim($customerName);
+    if ($customerName === '') {
+        $customerName = 'Walk-in customer';
+    }
+    if (mb_strlen($customerName, 'UTF-8') > 255) {
+        throw new InvalidArgumentException('Customer name must be 255 characters or fewer.');
     }
 
     $quantities = [];
@@ -477,6 +496,7 @@ function createCashSale($user_id, $items, $payment) {
         $quantities[$product_id] = ($quantities[$product_id] ?? 0) + $quantity;
     }
 
+    ensureOrderCustomerNameColumn();
     $conn->begin_transaction();
     try {
         $product_stmt = $conn->prepare("SELECT name, price, quantity FROM products WHERE id = ? FOR UPDATE");
@@ -506,8 +526,8 @@ function createCashSale($user_id, $items, $payment) {
 
         $change = $payment - $total;
         $status = 'completed';
-        $order_stmt = $conn->prepare("INSERT INTO orders (user_id, total, payment, change_amount, status) VALUES (?, ?, ?, ?, ?)");
-        $order_stmt->bind_param('iddds', $user_id, $total, $payment, $change, $status);
+        $order_stmt = $conn->prepare("INSERT INTO orders (user_id, customer_name, total, payment, change_amount, status) VALUES (?, ?, ?, ?, ?, ?)");
+        $order_stmt->bind_param('isddds', $user_id, $customerName, $total, $payment, $change, $status);
         if (!$order_stmt->execute()) {
             throw new RuntimeException('Unable to save the sale.');
         }
@@ -963,7 +983,7 @@ function sendPasswordResetEmail($email) {
 
     ensurePasswordResetTable();
     $conn->query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
-    $appUrl = rtrim(getApplicationEnvironment('APP_URL'), '/');
+    $appUrl = rtrim(getApplicationEnvironment('APP_URL', getApplicationEnvironment('RENDER_EXTERNAL_URL')), '/');
     $mailFrom = trim(getApplicationEnvironment('MAIL_FROM'));
     $smtpUsername = trim(getApplicationEnvironment('SMTP_USERNAME'));
     $smtpPassword = getApplicationEnvironment('SMTP_PASSWORD');

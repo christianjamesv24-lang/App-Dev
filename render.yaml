@@ -1,0 +1,48 @@
+services:
+  - type: pserv
+    name: baketrack-mysql
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile.mysql
+    dockerContext: .
+    envVars:
+      - key: MYSQL_DATABASE
+        value: baketrack
+      - key: MYSQL_USER
+        value: baketrack
+      - key: MYSQL_PASSWORD
+        generateValue: true
+      - key: MYSQL_ROOT_PASSWORD
+        generateValue: true
+    disk:
+      name: baketrack-mysql-data
+      mountPath: /var/lib/mysql
+      sizeGB: 10
+
+  - type: web
+    name: baketrack
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    envVars:
+      - key: DB_HOST
+        value: baketrack-mysql
+      - key: DB_PORT
+        value: "3306"
+      - key: DB_NAME
+        value: baketrack
+      - key: DB_USER
+        value: baketrack
+      - key: DB_PASS
+        fromService:
+          type: pserv
+          name: baketrack-mysql
+          envVarKey: MYSQL_PASSWORD
+    disk:
+      name: baketrack-uploads
+      mountPath: /var/www/html/uploads/products
+      sizeGB: 1

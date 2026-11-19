@@ -18,6 +18,33 @@ You can also use `npm start` or `npm run dev`. Stop the server with `Ctrl+C`.
 This uses PHP's built-in development server. Make sure `php` and `npm` are
 available in your terminal.
 
+Assistant direct-sale reports record the walk-in customer's name along with
+the server-calculated total, payment, and change. Existing databases gain the
+optional `orders.customer_name` field automatically when an assistant opens
+the direct-sales report.
+
+## Deploy on Render
+
+The root `render.yaml` defines a PHP/Apache web service and a private MySQL 8.4
+service in Singapore. Both services use paid plans and persistent disks so
+database contents and product uploads survive restarts. Render charges for
+these resources while they exist; review the current Render pricing before
+creating the Blueprint.
+
+The MySQL service initializes a clean schema from `database/schema.sql`.
+Development accounts, password hashes, and sample orders from
+`database/baketrack.sql` are intentionally not imported. After the Blueprint
+is deployed, open the web service's Shell and run:
+
+```sh
+php scripts/create-admin.php
+```
+
+The script securely prompts for the first admin account and refuses to create
+another if an admin already exists. Add products through the admin dashboard.
+Set the `SMTP_*` environment variables in Render to enable account recovery
+email; never commit `.env` or mail credentials.
+
 Install PHP dependencies before running the app:
 
 ```powershell
