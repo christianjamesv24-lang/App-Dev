@@ -28,7 +28,6 @@ $flags = $ssl ? MYSQLI_CLIENT_SSL : 0;
 if ($ssl) {
     $ca = getenv("DB_SSL_CA") ?: "/etc/ssl/certs/ca-certificates.crt";
     $db->ssl_set(null, null, $ca, null, null);
-    $db->options(MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true);
 }
 $db->options(MYSQLI_OPT_CONNECT_TIMEOUT, 10);
 $connected = $db->real_connect(

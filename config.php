@@ -52,9 +52,6 @@ if ($dbSslEnabled) {
     if ($dbSslCa === '' || !$conn->ssl_set(null, null, $dbSslCa, null, null)) {
         throw new RuntimeException('Unable to configure the database CA certificate.');
     }
-    if (!$conn->options(MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, true)) {
-        throw new RuntimeException('Unable to enable database certificate verification.');
-    }
 }
 $clientFlags = $dbSslEnabled ? MYSQLI_CLIENT_SSL : 0;
 if (!$conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, null, $clientFlags)) {
