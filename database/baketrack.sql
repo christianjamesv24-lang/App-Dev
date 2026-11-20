@@ -75,6 +75,7 @@ INSERT INTO `messages` (`id`, `sender_id`, `receiver_id`, `message`, `is_read`, 
 CREATE TABLE `orders` (
   `id` int NOT NULL,
   `user_id` int NOT NULL,
+  `customer_name` varchar(255) DEFAULT NULL,
   `total` decimal(10,2) NOT NULL DEFAULT '0.00',
   `payment` decimal(10,2) DEFAULT NULL,
   `change_amount` decimal(10,2) DEFAULT NULL,

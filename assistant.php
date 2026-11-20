@@ -11,6 +11,9 @@ if (!is_string($requested_page) || !in_array($requested_page, $allowed_pages, tr
     exit();
 }
 $page = $requested_page;
+if ($page === 'report') {
+    ensureOrderCustomerNameColumn();
+}
 
 // Get user info
 $user = $conn->query("SELECT * FROM users WHERE id = $user_id")->fetch_assoc();
@@ -39,7 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_report'])) {
     $items = json_decode($_POST['products'] ?? '', true);
     try {
-        createCashSale($user_id, $items, $_POST['payment'] ?? null);
+        createCashSale($user_id, $items, $_POST['payment'] ?? null, $_POST['customer_name'] ?? '');
         header('Location: assistant.php?page=report&saved=1');
     } catch (InvalidArgumentException $error) {
         header('Location: assistant.php?page=report&error=invalid');
@@ -135,7 +138,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="product-card" data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES, 'UTF-8') ?>">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">
@@ -285,6 +288,11 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                         <div class="sell-total">
                             <p><strong>Total Amount: ₱<span id="sellTotal">0.00</span></strong></p>
                         </div>
+
+                        <div class="form-group">
+                            <label for="customerName">Customer</label>
+                            <input type="text" name="customer_name" id="customerName" maxlength="255" value="Walk-in customer" required>
+                        </div>
                         
                         <div class="form-group">
                             <label>Customer Payment</label>
@@ -314,7 +322,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 $sells = $conn->query("SELECT o.*, u.fullname as assistant FROM orders o 
                     JOIN users u ON o.user_id = u.id 
                     WHERE o.status = 'completed' AND o.user_id = $user_id
-                    ORDER BY o.order_date DESC LIMIT 10");
+                    ORDER BY o.order_date DESC");
                 if ($sells->num_rows > 0):
                 ?>
                 <div class="sold-list">
@@ -322,7 +330,8 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                     <div class="sold-item">
                         <div class="sold-header">
                             <span class="sold-id">#<?= $sell['id'] ?></span>
-                            <span class="sold-by">👤 <?= htmlspecialchars($sell['assistant']) ?></span>
+                            <span class="sold-by">Customer: <?= htmlspecialchars($sell['customer_name'] ?: 'Walk-in customer', ENT_QUOTES, 'UTF-8') ?></span>
+                            <span class="sold-by">Recorded by: <?= htmlspecialchars($sell['assistant'], ENT_QUOTES, 'UTF-8') ?></span>
                             <span class="sold-date"><?= date('M d, Y h:i A', strtotime($sell['order_date'])) ?></span>
                         </div>
                         <div class="sold-body">
@@ -530,6 +539,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 $fullname = trim($_POST['fullname'] ?? '');
                 $birthdate = trim($_POST['birthdate'] ?? '');
                 $darkmode = isset($_POST['darkmode']) ? 1 : 0;
+                $anonymous = isset($_POST['anonymous']) ? 1 : 0;
 
                 if ($fullname === '') {
                     echo "<script>alert('Full name is required.'); window.location='assistant.php?page=settings';</script>";
@@ -537,11 +547,11 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 }
 
                 if ($birthdate === '') {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('sii', $fullname, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
                 } else {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('ssii', $fullname, $birthdate, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('ssiii', $fullname, $birthdate, $darkmode, $anonymous, $user_id);
                 }
 
                 if ($update_stmt->execute()) {
@@ -576,12 +586,24 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                             <input type="email" value="<?= $user['email'] ?>" disabled>
                             <small>Email cannot be changed</small>
                         </div>
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input type="text" value="<?= htmlspecialchars($user['username'], ENT_QUOTES, 'UTF-8') ?>" disabled>
+                            <small>Username cannot be changed</small>
+                        </div>
                         
                         <div class="settings-options">
                             <div class="toggle-group">
                                 <label>Dark Mode</label>
                                 <div class="toggle-switch">
                                     <input type="checkbox" name="darkmode" <?= $user['darkmode'] ? 'checked' : '' ?>>
+                                    <span class="slider"></span>
+                                </div>
+                            </div>
+                            <div class="toggle-group">
+                                <label>Anonymous Mode</label>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" name="anonymous" <?= $user['anonymous'] ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </div>
                             </div>

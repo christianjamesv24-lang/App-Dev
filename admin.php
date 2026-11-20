@@ -36,12 +36,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
     $action = $_POST['user_action'];
     $updated = false;
 
-    if ($target_id && $action === 'update_name') {
+    if ($target_id && $action === 'update_user') {
         $fullname = trim($_POST['fullname'] ?? '');
-        if ($fullname !== '') {
-            $user_stmt = $conn->prepare("UPDATE users SET fullname = ? WHERE id = ?");
-            $user_stmt->bind_param('si', $fullname, $target_id);
-            $updated = $user_stmt->execute();
+        $email = trim($_POST['email'] ?? '');
+        $role = $_POST['role'] ?? '';
+        if ($fullname !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)
+            && in_array($role, ['admin', 'assistant', 'customer'], true)
+            && ($target_id !== (int) $user_id || $role === 'admin')) {
+            $email_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $email_stmt->bind_param('si', $email, $target_id);
+            $email_stmt->execute();
+            if ($email_stmt->get_result()->num_rows === 0) {
+                $user_stmt = $conn->prepare("UPDATE users SET fullname = ?, email = ?, role = ? WHERE id = ?");
+                $user_stmt->bind_param('sssi', $fullname, $email, $role, $target_id);
+                $updated = $user_stmt->execute();
+            }
         }
     } elseif ($target_id && $action === 'change_password') {
         $password = $_POST['password'] ?? '';
@@ -90,34 +99,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $file_type = $_FILES['image']['error'] === UPLOAD_ERR_OK
                 ? (new finfo(FILEINFO_MIME_TYPE))->file($_FILES['image']['tmp_name'])
                 : false;
-            if (!$file_type || !isset($allowed_types[$file_type]) || $_FILES['image']['size'] > 5 * 1024 * 1024) {
+            if (!$file_type || !isset($allowed_types[$file_type]) || $_FILES['image']['size'] > 4 * 1024 * 1024) {
                 header('Location: admin.php?page=uploads&error=image');
                 exit();
             }
-            $target_dir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products';
-            if (!is_dir($target_dir) && !mkdir($target_dir, 0755, true) && !is_dir($target_dir)) {
-                throw new RuntimeException('Unable to create the product image directory.');
-            }
-            $image = bin2hex(random_bytes(16)) . '.' . $allowed_types[$file_type];
-            if (!move_uploaded_file($_FILES['image']['tmp_name'], $target_dir . DIRECTORY_SEPARATOR . $image)) {
-                header('Location: admin.php?page=uploads&error=image');
+            try {
+                $image = saveProductImage(
+                    $_FILES['image']['tmp_name'],
+                    $allowed_types[$file_type],
+                    $file_type
+                );
+            } catch (RuntimeException $exception) {
+                error_log('Product image upload failed: ' . $exception->getMessage());
+                header('Location: admin.php?page=uploads&error=storage');
                 exit();
             }
         }
 
+        $current_product = $id > 0 ? getProductById($id) : null;
         $saved = $id > 0
             ? updateProduct($id, $name, $price, $quantity, $description, $image)
             : addProduct($name, $price, $quantity, $description, $image ?? 'default.svg');
         if (!$saved) {
             if ($image !== null) {
-                $image_path = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products' . DIRECTORY_SEPARATOR . $image;
-                if (is_file($image_path) && !unlink($image_path)) {
-                    error_log('Unable to remove unused product image: ' . $image_path);
+                try {
+                    if (!removeProductImage($image)) {
+                        error_log('Unable to remove unused product image.');
+                    }
+                } catch (RuntimeException $exception) {
+                    error_log('Unable to remove unused product image: ' . $exception->getMessage());
                 }
             }
             error_log('Product save failed: ' . $conn->error);
             header('Location: admin.php?page=uploads&error=product');
         } else {
+            if ($image !== null && $current_product && $current_product['image'] !== $image) {
+                try {
+                    if (!removeProductImage($current_product['image'])) {
+                        error_log('Unable to remove the replaced product image.');
+                    }
+                } catch (RuntimeException $exception) {
+                    error_log('Unable to remove the replaced product image: ' . $exception->getMessage());
+                }
+            }
             header('Location: admin.php?page=uploads&saved=1');
         }
         exit();
@@ -126,10 +150,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Delete Product
     if (isset($_POST['delete_product'])) {
         $id = filter_var($_POST['product_id'] ?? null, FILTER_VALIDATE_INT);
-        if (!$id || !deleteProduct($id)) {
+        $product = $id ? getProductById($id) : null;
+        if (!$id || !$product || !deleteProduct($id)) {
             error_log('Product delete failed: ' . $conn->error);
             header('Location: admin.php?page=uploads&error=delete');
         } else {
+            try {
+                if (!removeProductImage($product['image'])) {
+                    error_log('Unable to remove the deleted product image.');
+                }
+            } catch (RuntimeException $exception) {
+                error_log('Unable to remove the deleted product image: ' . $exception->getMessage());
+            }
             header('Location: admin.php?page=uploads&deleted=1');
         }
         exit();
@@ -179,6 +211,9 @@ $stats = [
         COUNT(*) as total 
         FROM transactions")->fetch_assoc()
 ];
+$stats['efficiency'] = (int) $stats['transactions']['total'] > 0
+    ? round(((int) $stats['transactions']['successful'] / (int) $stats['transactions']['total']) * 100)
+    : 0;
 
 // Get inventory data for chart
 $monthly_data = [];
@@ -274,6 +309,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     <h3><?= number_format($stats['reviews'], 1) ?>★</h3>
                     <p>Reviews</p>
                 </div>
+                <div class="stat-card" style="border-left: 4px solid #4CAF50;">
+                    <i class="fas fa-chart-line"></i>
+                    <h3><?= $stats['efficiency'] ?>%</h3>
+                    <p>System Efficiency</p>
+                </div>
             </div>
 
             <div class="quick-actions">
@@ -307,7 +347,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="product-card" data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES, 'UTF-8') ?>">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">
@@ -331,7 +371,9 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <?php elseif (isset($_GET['deleted'])): ?>
             <div class="alert alert-success" role="status">Product deleted.</div>
             <?php elseif (isset($_GET['error']) && $_GET['error'] === 'image'): ?>
-            <div class="alert alert-error" role="alert">Choose a valid JPG, PNG, GIF, or WebP image smaller than 5 MB.</div>
+            <div class="alert alert-error" role="alert">Choose a valid JPG, PNG, GIF, or WebP image no larger than 4 MB.</div>
+            <?php elseif (isset($_GET['error']) && $_GET['error'] === 'storage'): ?>
+            <div class="alert alert-error" role="alert">Image storage is unavailable. Check the deployment's Blob configuration and try again.</div>
             <?php elseif (isset($_GET['error'])): ?>
             <div class="alert alert-error" role="alert">Unable to save that product.</div>
             <?php endif; ?>
@@ -341,7 +383,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="upload-card">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <div class="upload-info">
                         <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                         <p>₱<?= number_format($product['price'], 2) ?></p>
@@ -726,7 +768,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                             <td><span class="role-badge <?= $u['role'] ?>"><?= ucfirst($u['role']) ?></span></td>
                             <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
                             <td>
-                                <button class="btn-small btn-edit" onclick='editUser(<?= (int) $u['id'] ?>, <?= htmlspecialchars(json_encode($u['username'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['fullname'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>)'>
+                                <button class="btn-small btn-edit" onclick='editUser(<?= (int) $u['id'] ?>, <?= htmlspecialchars(json_encode($u['username'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['fullname'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['email'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['role'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>)'>
                                     <i class="fas fa-edit"></i>
                                 </button>
                                 <button class="btn-small btn-danger" onclick="changePassword(<?= $u['id'] ?>)">
@@ -768,9 +810,28 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             
             function editUser(id, username, fullname, email, role) {
                 const newFullname = prompt('Edit Full Name:', fullname);
-                if (newFullname && newFullname !== fullname) {
-                    submitUserAction(id, 'update_name', 'fullname', newFullname);
-                }
+                if (newFullname === null || newFullname.trim() === '') return;
+                const newEmail = prompt('Edit Email Address:', email);
+                if (newEmail === null || newEmail.trim() === '') return;
+                const newRole = prompt('Edit Role (admin, assistant, customer):', role);
+                if (newRole === null) return;
+                submitUserUpdate(id, newFullname.trim(), newEmail.trim(), newRole.trim().toLowerCase());
+            }
+
+            function submitUserUpdate(id, fullname, email, role) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'admin.php?page=database';
+                const fields = {user_id: id, user_action: 'update_user', fullname, email, role};
+                Object.entries(fields).forEach(([name, value]) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = name;
+                    input.value = value;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                form.submit();
             }
             
             function changePassword(id) {
@@ -875,6 +936,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 $fullname = trim($_POST['fullname'] ?? '');
                 $birthdate = trim($_POST['birthdate'] ?? '');
                 $darkmode = isset($_POST['darkmode']) ? 1 : 0;
+                $anonymous = isset($_POST['anonymous']) ? 1 : 0;
 
                 if ($fullname === '') {
                     echo "<script>alert('Full name is required.'); window.location='admin.php?page=settings';</script>";
@@ -882,11 +944,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 }
 
                 if ($birthdate === '') {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('sii', $fullname, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
                 } else {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('ssii', $fullname, $birthdate, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('ssiii', $fullname, $birthdate, $darkmode, $anonymous, $user_id);
                 }
 
                 if ($update_stmt->execute()) {
@@ -934,6 +996,13 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                                 <label>Dark Mode</label>
                                 <div class="toggle-switch">
                                     <input type="checkbox" name="darkmode" <?= $user['darkmode'] ? 'checked' : '' ?>>
+                                    <span class="slider"></span>
+                                </div>
+                            </div>
+                            <div class="toggle-group">
+                                <label>Anonymous Mode</label>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" name="anonymous" <?= $user['anonymous'] ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </div>
                             </div>

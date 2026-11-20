@@ -211,7 +211,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 $review_count = $review_data['count'] ?? 0;
                 ?>
                 <div class="product-card" data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES, 'UTF-8') ?>">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <div class="product-rating">
@@ -520,6 +520,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 $fullname = trim($_POST['fullname'] ?? '');
                 $birthdate = trim($_POST['birthdate'] ?? '');
                 $darkmode = isset($_POST['darkmode']) ? 1 : 0;
+                $anonymous = isset($_POST['anonymous']) ? 1 : 0;
 
                 if ($fullname === '') {
                     echo "<script>alert('Full name is required.'); window.location='customer.php?page=settings';</script>";
@@ -527,11 +528,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 }
 
                 if ($birthdate === '') {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('sii', $fullname, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
                 } else {
-                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ? WHERE id = ?");
-                    $update_stmt->bind_param('ssii', $fullname, $birthdate, $darkmode, $user_id);
+                    $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = ?, darkmode = ?, anonymous = ? WHERE id = ?");
+                    $update_stmt->bind_param('ssiii', $fullname, $birthdate, $darkmode, $anonymous, $user_id);
                 }
 
                 if ($update_stmt->execute()) {
@@ -572,6 +573,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                                 <label>Dark Mode</label>
                                 <div class="toggle-switch">
                                     <input type="checkbox" name="darkmode" <?= $user['darkmode'] ? 'checked' : '' ?>>
+                                    <span class="slider"></span>
+                                </div>
+                            </div>
+                            <div class="toggle-group">
+                                <label>Anonymous Mode</label>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" name="anonymous" <?= $user['anonymous'] ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </div>
                             </div>

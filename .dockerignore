@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+!.env.example
+vendor
+node_modules
+php-server.log
+database/baketrack.sql
+uploads/products/*
+!uploads/products/default.svg
