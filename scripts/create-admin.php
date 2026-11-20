@@ -20,19 +20,33 @@ if ($username === '' || $fullname === '' || !filter_var($email, FILTER_VALIDATE_
     exit(1);
 }
 
-$terminalState = trim((string) shell_exec('stty -g'));
-if ($terminalState === '') {
-    fwrite(STDERR, "Unable to securely read a password from this terminal.\n");
-    exit(1);
-}
-
 fwrite(STDOUT, "Admin password (at least 12 characters): ");
-exec('stty -echo');
-try {
-    $password = trim((string) fgets(STDIN));
-} finally {
-    exec('stty ' . escapeshellarg($terminalState));
-    fwrite(STDOUT, "\n");
+if (PHP_OS_FAMILY === 'Windows') {
+    $password = shell_exec(
+        'powershell -NoProfile -Command "$secure = Read-Host -AsSecureString; '
+        . '$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); '
+        . 'try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) } '
+        . 'finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer) }"'
+    );
+    if (!is_string($password)) {
+        fwrite(STDERR, "Unable to securely read a password from this terminal.\n");
+        exit(1);
+    }
+    $password = rtrim($password, "\r\n");
+} else {
+    $terminalState = trim((string) shell_exec('stty -g'));
+    if ($terminalState === '') {
+        fwrite(STDERR, "Unable to securely read a password from this terminal.\n");
+        exit(1);
+    }
+
+    exec('stty -echo');
+    try {
+        $password = trim((string) fgets(STDIN));
+    } finally {
+        exec('stty ' . escapeshellarg($terminalState));
+        fwrite(STDOUT, "\n");
+    }
 }
 
 if (strlen($password) < 12) {

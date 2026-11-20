@@ -138,7 +138,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="product-card" data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES, 'UTF-8') ?>">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">

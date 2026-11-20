@@ -45,6 +45,62 @@ another if an admin already exists. Add products through the admin dashboard.
 Set the `SMTP_*` environment variables in Render to enable account recovery
 email; never commit `.env` or mail credentials.
 
+## Deploy on Vercel
+
+**Plan restriction:** Vercel's Hobby terms limit use to personal or
+non-commercial purposes. Do not deploy BakeTrack as a live bakery/business
+system on Hobby. Use Hobby only if this is a non-commercial demo; a commercial
+deployment requires a paid plan or another host.
+
+The root Dockerfile runs Apache/PHP and the Vercel Blob SDK for product images.
+Vercel's Docker container runtime is in beta, so confirm it is available to
+your Vercel account before creating the project. The container listens on
+`PORT` (default `80`), and product image uploads are limited to 4 MB to stay
+within Vercel's request-size limit.
+
+The app requires a separate MySQL-compatible database because Vercel does not
+provide MySQL. TiDB Cloud Starter advertises a free quota for up to five
+eligible instances per organization: 5 GiB row storage, 5 GiB columnar
+storage, and 50 million request units per instance each month. Free instances
+are throttled when their quota is exhausted. Review TiDB's current terms and
+select a free instance, not a scalable instance, before creating one. Configure
+a public TLS endpoint and apply `database/schema.sql` using TiDB's SQL editor.
+The schema contains no development accounts or sample orders.
+
+Set these Vercel environment variables for the project:
+
+- `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, and `DB_NAME` from TiDB.
+- `DB_SSL=true` to require TLS. The container uses its system CA bundle by
+  default; set `DB_SSL_CA` only if TiDB supplies a different CA certificate
+  path.
+- `APP_URL` to the app's public HTTPS URL (recommended for password recovery).
+- The `SMTP_*` settings if account recovery emails should be sent.
+
+Create a **public** Vercel Blob store and connect it to the project. The SDK
+uses Vercel's short-lived OIDC credentials when available; if the container
+runtime does not provide OIDC, add `BLOB_READ_WRITE_TOKEN` through Vercel's
+environment settings and never commit it. Vercel Hobby currently includes
+1 GB of Blob storage, 10,000 simple operations, 2,000 advanced operations, and
+10 GB of Blob transfer per month. Hobby also has monthly compute allowances;
+exceeding them can pause deployments. Product records store Blob URLs, and
+deleting or replacing a product removes its stored image. Database-backed PHP
+sessions survive container restarts and scaling.
+
+After connecting the project and pulling its environment variables locally,
+create the first admin with the existing secure prompt:
+
+```powershell
+vercel env pull .env
+composer install
+php scripts/create-admin.php
+```
+
+The script uses the pulled DB settings to create the account in TiDB. On
+Windows, if TiDB requires a CA file not present in the local system bundle,
+download the CA from TiDB and set `$env:DB_SSL_CA` to its local path before
+running the script. It prompts for the admin password without echoing it. Do
+not paste environment values or passwords into chat.
+
 Install PHP dependencies before running the app:
 
 ```powershell

@@ -918,6 +918,124 @@ function uploadImage($file, $target_dir = 'uploads/products/') {
     return ['success' => false, 'message' => 'Upload failed'];
 }
 
+function isVercelDeployment() {
+    return getApplicationEnvironment('VERCEL', 'false') === '1'
+        || getApplicationEnvironment('VERCEL_ENV', '') !== '';
+}
+
+function isVercelBlobUrl($url) {
+    if (!is_string($url) || filter_var($url, FILTER_VALIDATE_URL) === false) {
+        return false;
+    }
+
+    $parts = parse_url($url);
+    return isset($parts['scheme'], $parts['host'])
+        && strtolower($parts['scheme']) === 'https'
+        && str_ends_with(strtolower($parts['host']), '.blob.vercel-storage.com');
+}
+
+function runVercelBlobCommand($operation, $pathname, $contentType = '', $sourcePath = '') {
+    if (!function_exists('proc_open')) {
+        throw new RuntimeException('Process execution is unavailable for Vercel Blob storage.');
+    }
+
+    $scriptPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'vercel-blob.mjs';
+    $command = [
+        getApplicationEnvironment('NODE_BINARY', 'node'),
+        $scriptPath,
+        $operation,
+        $pathname,
+        $contentType,
+        $sourcePath
+    ];
+    $pipes = [];
+    $process = proc_open($command, [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w']
+    ], $pipes, dirname(__DIR__));
+
+    if (!is_resource($process)) {
+        throw new RuntimeException('Unable to start the Vercel Blob operation.');
+    }
+
+    fclose($pipes[0]);
+    $output = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $errorOutput = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    if ($exitCode !== 0) {
+        error_log('Vercel Blob operation failed with exit code ' . $exitCode . '.');
+        throw new RuntimeException('The Vercel Blob operation failed.');
+    }
+
+    $result = json_decode($output, true);
+    if (!is_array($result)) {
+        error_log('Vercel Blob operation returned an invalid response.');
+        throw new RuntimeException('The Vercel Blob operation returned an invalid response.');
+    }
+
+    return $result;
+}
+
+function saveProductImage($temporaryPath, $extension, $contentType) {
+    $filename = bin2hex(random_bytes(16)) . '.' . $extension;
+    $blobToken = getApplicationEnvironment('BLOB_READ_WRITE_TOKEN', '');
+    $blobStoreId = getApplicationEnvironment('BLOB_STORE_ID', '');
+    $oidcToken = getApplicationEnvironment('VERCEL_OIDC_TOKEN', '');
+    $hasBlobCredentials = $blobToken !== '' || ($blobStoreId !== '' && $oidcToken !== '');
+
+    if (isVercelDeployment()) {
+        if (!$hasBlobCredentials) {
+            throw new RuntimeException('Connect a Vercel Blob store to this project before uploading images.');
+        }
+
+        $result = runVercelBlobCommand('put', 'products/' . $filename, $contentType, $temporaryPath);
+        if (!isset($result['url']) || !isVercelBlobUrl($result['url'])) {
+            throw new RuntimeException('Vercel Blob returned an invalid image URL.');
+        }
+
+        return $result['url'];
+    }
+
+    $targetDirectory = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products';
+    if (!is_dir($targetDirectory) && !mkdir($targetDirectory, 0755, true) && !is_dir($targetDirectory)) {
+        throw new RuntimeException('Unable to create the product image directory.');
+    }
+    if (!move_uploaded_file($temporaryPath, $targetDirectory . DIRECTORY_SEPARATOR . $filename)) {
+        throw new RuntimeException('Unable to save the uploaded product image.');
+    }
+
+    return $filename;
+}
+
+function removeProductImage($image) {
+    if (!is_string($image) || $image === '' || $image === 'default.svg') {
+        return true;
+    }
+
+    if (isVercelBlobUrl($image)) {
+        $result = runVercelBlobCommand('delete', $image);
+        return !empty($result['deleted']);
+    }
+
+    $filename = basename($image);
+    $imagePath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products' . DIRECTORY_SEPARATOR . $filename;
+    return !is_file($imagePath) || unlink($imagePath);
+}
+
+function getProductImageUrl($image) {
+    if (!is_string($image) || trim($image) === '' || $image === 'default.svg') {
+        return 'uploads/products/default.svg';
+    }
+    if (isVercelBlobUrl($image)) {
+        return $image;
+    }
+
+    return 'uploads/products/' . rawurlencode(basename($image));
+}
+
 /**
  * Format price
  */
@@ -983,7 +1101,11 @@ function sendPasswordResetEmail($email) {
 
     ensurePasswordResetTable();
     $conn->query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
-    $appUrl = rtrim(getApplicationEnvironment('APP_URL', getApplicationEnvironment('RENDER_EXTERNAL_URL')), '/');
+    $vercelUrl = trim(getApplicationEnvironment('VERCEL_URL'));
+    $defaultAppUrl = $vercelUrl !== ''
+        ? 'https://' . $vercelUrl
+        : getApplicationEnvironment('RENDER_EXTERNAL_URL');
+    $appUrl = rtrim(getApplicationEnvironment('APP_URL', $defaultAppUrl), '/');
     $mailFrom = trim(getApplicationEnvironment('MAIL_FROM'));
     $smtpUsername = trim(getApplicationEnvironment('SMTP_USERNAME'));
     $smtpPassword = getApplicationEnvironment('SMTP_PASSWORD');

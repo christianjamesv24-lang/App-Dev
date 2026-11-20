@@ -99,34 +99,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $file_type = $_FILES['image']['error'] === UPLOAD_ERR_OK
                 ? (new finfo(FILEINFO_MIME_TYPE))->file($_FILES['image']['tmp_name'])
                 : false;
-            if (!$file_type || !isset($allowed_types[$file_type]) || $_FILES['image']['size'] > 5 * 1024 * 1024) {
+            if (!$file_type || !isset($allowed_types[$file_type]) || $_FILES['image']['size'] > 4 * 1024 * 1024) {
                 header('Location: admin.php?page=uploads&error=image');
                 exit();
             }
-            $target_dir = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products';
-            if (!is_dir($target_dir) && !mkdir($target_dir, 0755, true) && !is_dir($target_dir)) {
-                throw new RuntimeException('Unable to create the product image directory.');
-            }
-            $image = bin2hex(random_bytes(16)) . '.' . $allowed_types[$file_type];
-            if (!move_uploaded_file($_FILES['image']['tmp_name'], $target_dir . DIRECTORY_SEPARATOR . $image)) {
-                header('Location: admin.php?page=uploads&error=image');
+            try {
+                $image = saveProductImage(
+                    $_FILES['image']['tmp_name'],
+                    $allowed_types[$file_type],
+                    $file_type
+                );
+            } catch (RuntimeException $exception) {
+                error_log('Product image upload failed: ' . $exception->getMessage());
+                header('Location: admin.php?page=uploads&error=storage');
                 exit();
             }
         }
 
+        $current_product = $id > 0 ? getProductById($id) : null;
         $saved = $id > 0
             ? updateProduct($id, $name, $price, $quantity, $description, $image)
             : addProduct($name, $price, $quantity, $description, $image ?? 'default.svg');
         if (!$saved) {
             if ($image !== null) {
-                $image_path = __DIR__ . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'products' . DIRECTORY_SEPARATOR . $image;
-                if (is_file($image_path) && !unlink($image_path)) {
-                    error_log('Unable to remove unused product image: ' . $image_path);
+                try {
+                    if (!removeProductImage($image)) {
+                        error_log('Unable to remove unused product image.');
+                    }
+                } catch (RuntimeException $exception) {
+                    error_log('Unable to remove unused product image: ' . $exception->getMessage());
                 }
             }
             error_log('Product save failed: ' . $conn->error);
             header('Location: admin.php?page=uploads&error=product');
         } else {
+            if ($image !== null && $current_product && $current_product['image'] !== $image) {
+                try {
+                    if (!removeProductImage($current_product['image'])) {
+                        error_log('Unable to remove the replaced product image.');
+                    }
+                } catch (RuntimeException $exception) {
+                    error_log('Unable to remove the replaced product image: ' . $exception->getMessage());
+                }
+            }
             header('Location: admin.php?page=uploads&saved=1');
         }
         exit();
@@ -135,10 +150,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Delete Product
     if (isset($_POST['delete_product'])) {
         $id = filter_var($_POST['product_id'] ?? null, FILTER_VALIDATE_INT);
-        if (!$id || !deleteProduct($id)) {
+        $product = $id ? getProductById($id) : null;
+        if (!$id || !$product || !deleteProduct($id)) {
             error_log('Product delete failed: ' . $conn->error);
             header('Location: admin.php?page=uploads&error=delete');
         } else {
+            try {
+                if (!removeProductImage($product['image'])) {
+                    error_log('Unable to remove the deleted product image.');
+                }
+            } catch (RuntimeException $exception) {
+                error_log('Unable to remove the deleted product image: ' . $exception->getMessage());
+            }
             header('Location: admin.php?page=uploads&deleted=1');
         }
         exit();
@@ -324,7 +347,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="product-card" data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES, 'UTF-8') ?>">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">
@@ -348,7 +371,9 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <?php elseif (isset($_GET['deleted'])): ?>
             <div class="alert alert-success" role="status">Product deleted.</div>
             <?php elseif (isset($_GET['error']) && $_GET['error'] === 'image'): ?>
-            <div class="alert alert-error" role="alert">Choose a valid JPG, PNG, GIF, or WebP image smaller than 5 MB.</div>
+            <div class="alert alert-error" role="alert">Choose a valid JPG, PNG, GIF, or WebP image no larger than 4 MB.</div>
+            <?php elseif (isset($_GET['error']) && $_GET['error'] === 'storage'): ?>
+            <div class="alert alert-error" role="alert">Image storage is unavailable. Check the deployment's Blob configuration and try again.</div>
             <?php elseif (isset($_GET['error'])): ?>
             <div class="alert alert-error" role="alert">Unable to save that product.</div>
             <?php endif; ?>
@@ -358,7 +383,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 while ($product = $products->fetch_assoc()): 
                 ?>
                 <div class="upload-card">
-                    <img src="uploads/products/<?= rawurlencode($product['image']) ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
+                    <img src="<?= htmlspecialchars(getProductImageUrl($product['image']), ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?>" onerror="this.onerror=null;this.src='uploads/products/default.svg'">
                     <div class="upload-info">
                         <h4><?= htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8') ?></h4>
                         <p>₱<?= number_format($product['price'], 2) ?></p>

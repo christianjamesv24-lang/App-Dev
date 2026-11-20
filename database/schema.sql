@@ -114,6 +114,14 @@ CREATE TABLE `password_reset_tokens` (
   KEY `expires_at` (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+CREATE TABLE `php_sessions` (
+  `id` varchar(128) NOT NULL,
+  `data` mediumblob NOT NULL,
+  `last_activity` int unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `last_activity` (`last_activity`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE `users` (
   `id` int NOT NULL AUTO_INCREMENT,
   `username` varchar(100) NOT NULL,
