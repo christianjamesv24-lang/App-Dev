@@ -1,6 +1,6 @@
 <?php
 
-final class DatabaseSessionHandler implements SessionUpdateTimestampHandlerInterface {
+final class DatabaseSessionHandler implements SessionHandlerInterface, SessionUpdateTimestampHandlerInterface {
     private mysqli $connection;
 
     public function __construct(mysqli $connection) {

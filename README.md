@@ -23,27 +23,31 @@ the server-calculated total, payment, and change. Existing databases gain the
 optional `orders.customer_name` field automatically when an assistant opens
 the direct-sales report.
 
-## Deploy on Render
+## Deploy a free Render demo
 
-The root `render.yaml` defines a PHP/Apache web service and a private MySQL 8.4
-service in Singapore. Both services use paid plans and persistent disks so
-database contents and product uploads survive restarts. Render charges for
-these resources while they exist; review the current Render pricing before
-creating the Blueprint.
+The root `render.yaml` defines a single Free Docker web service. It expects an
+external MySQL-compatible TiDB Cloud Starter instance; it does not provision
+paid Render services, a Render database, or a persistent disk. Keep the TiDB
+spending limit at zero to stay within its free quota.
 
-The MySQL service initializes a clean schema from `database/schema.sql`.
-Development accounts, password hashes, and sample orders from
-`database/baketrack.sql` are intentionally not imported. After the Blueprint
-is deployed, open the web service's Shell and run:
+Render Free services sleep after 15 minutes without traffic and have ephemeral
+filesystems. Uploaded product images are lost on restarts, sleeps, and
+redeploys. Render Free also has no Shell access and blocks outbound SMTP ports,
+so password-recovery email is unavailable. Use this setup only for a
+non-production demo, not live bakery records.
 
-```sh
-php scripts/create-admin.php
-```
+Create a separate TiDB database named `baketrack_demo` and apply
+`database/schema.sql` to it. Do not import `database/baketrack.sql`, which
+contains development data. When creating the Render Blueprint, set `DB_HOST`,
+`DB_USER`, and `DB_PASS` from TiDB's connection details; the remaining
+connection settings are preconfigured for TiDB TLS.
 
-The script securely prompts for the first admin account and refuses to create
-another if an admin already exists. Add products through the admin dashboard.
-Set the `SMTP_*` environment variables in Render to enable account recovery
-email; never commit `.env` or mail credentials.
+To create the first administrator, run `php scripts/create-admin.php` from a
+trusted local terminal with the TiDB connection variables available in the
+environment. TiDB must allow that computer's IP temporarily for this step.
+The script securely prompts for the account details and refuses to create
+another administrator if one already exists. Never commit database or mail
+credentials.
 
 ## Deploy on Vercel
 
