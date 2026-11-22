@@ -205,15 +205,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
 $stats = [
     'products' => $conn->query("SELECT COUNT(*) as count FROM products")->fetch_assoc()['count'],
     'users' => $conn->query("SELECT COUNT(*) as count FROM users WHERE role='customer'")->fetch_assoc()['count'],
-    'reviews' => $conn->query("SELECT AVG(rating) as avg FROM reviews")->fetch_assoc()['avg'] ?? 0,
-    'transactions' => $conn->query("SELECT 
-        SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as successful,
-        COUNT(*) as total 
-        FROM transactions")->fetch_assoc()
+    'reviews' => $conn->query("SELECT AVG(rating) as avg FROM reviews")->fetch_assoc()['avg'] ?? 0
 ];
-$stats['efficiency'] = (int) $stats['transactions']['total'] > 0
-    ? round(((int) $stats['transactions']['successful'] / (int) $stats['transactions']['total']) * 100)
-    : 0;
 
 // Get inventory data for chart
 $monthly_data = [];
@@ -308,11 +301,6 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     <i class="fas fa-star"></i>
                     <h3><?= number_format($stats['reviews'], 1) ?>★</h3>
                     <p>Reviews</p>
-                </div>
-                <div class="stat-card" style="border-left: 4px solid #4CAF50;">
-                    <i class="fas fa-chart-line"></i>
-                    <h3><?= $stats['efficiency'] ?>%</h3>
-                    <p>System Efficiency</p>
                 </div>
             </div>
 
