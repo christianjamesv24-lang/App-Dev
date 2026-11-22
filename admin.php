@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
             $assistant_stmt->bind_param('ssss', $username, $password_hash, $email, $fullname);
             $updated = $assistant_stmt->execute();
         }
-    } elseif ($target_id && $action === 'update_user') {
+    } elseif ($target_id > 0 && $action === 'update_user') {
         $fullname = trim($_POST['fullname'] ?? '');
         $email = trim($_POST['email'] ?? '');
         $role = $_POST['role'] ?? '';
@@ -78,7 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
                 $updated = $user_stmt->execute();
             }
         }
-    } elseif ($target_id && $action === 'change_password') {
+    } elseif ($target_id > 0 && $action === 'change_password') {
         $password = $_POST['password'] ?? '';
         if (isValidPassword($password)) {
             $hashed_password = password_hash($password, PASSWORD_DEFAULT);
@@ -86,7 +86,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
             $password_stmt->bind_param('si', $hashed_password, $target_id);
             $updated = $password_stmt->execute();
         }
-    } elseif ($target_id && $action === 'delete') {
+    } elseif ($target_id > 0 && $action === 'delete') {
         $updated = anonymizeUserAccount((int) $target_id, (int) $user_id);
     }
 
@@ -770,7 +770,13 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <div class="page-header">
                 <h1>User Database</h1>
                 <div class="search-box">
-                    <input type="text" id="searchDatabase" placeholder="Search users..." aria-label="Search users" oninput="filterDatabase()">
+                    <select id="searchBy" onchange="updateSearchPlaceholder()" aria-label="Search field">
+                        <option value="username">Username</option>
+                        <option value="fullname">Full Name</option>
+                        <option value="email">Email</option>
+                        <option value="role">Role</option>
+                    </select>
+                    <input type="text" id="searchDatabase" placeholder="Search by username..." aria-label="Search users" oninput="filterDatabase()">
                     <button type="button" aria-label="Search users" onclick="filterDatabase()"><i class="fas fa-search"></i></button>
                 </div>
             </div>
@@ -855,15 +861,24 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             </div>
             
             <script>
+            function updateSearchPlaceholder() {
+                const searchBy = document.getElementById('searchBy').value;
+                const placeholders = {
+                    'username': 'Search by username...',
+                    'fullname': 'Search by full name...',
+                    'email': 'Search by email...',
+                    'role': 'Search by role (admin/assistant/customer)...'
+                };
+                document.getElementById('searchDatabase').placeholder = placeholders[searchBy] || 'Search...';
+            }
+
             function filterDatabase() {
                 const input = document.getElementById('searchDatabase').value.toLowerCase();
+                const searchBy = document.getElementById('searchBy').value;
                 const rows = document.querySelectorAll('#databaseBody tr');
                 rows.forEach(row => {
-                    const matches = ['username', 'fullname', 'email', 'role'].some(field => {
-                        const value = row.getAttribute('data-' + field) || '';
-                        return value.includes(input);
-                    });
-                    row.style.display = matches ? '' : 'none';
+                    const value = row.getAttribute('data-' + searchBy) || '';
+                    row.style.display = value.includes(input) ? '' : 'none';
                 });
             }
 
