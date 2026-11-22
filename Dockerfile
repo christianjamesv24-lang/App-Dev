@@ -1,8 +1,8 @@
 FROM php:8.3-apache-bookworm
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libonig-dev unzip \
-    && docker-php-ext-install mysqli mbstring \
+    && apt-get install -y --no-install-recommends ca-certificates libcurl4-openssl-dev libonig-dev unzip \
+    && docker-php-ext-install curl mysqli mbstring \
     && printf 'upload_max_filesize=4M\npost_max_size=5M\n' > /usr/local/etc/php/conf.d/uploads.ini \
     && rm -rf /var/lib/apt/lists/*
 

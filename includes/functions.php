@@ -1106,43 +1106,65 @@ function sendPasswordResetEmail($email) {
         ? 'https://' . $vercelUrl
         : getApplicationEnvironment('RENDER_EXTERNAL_URL');
     $appUrl = rtrim(getApplicationEnvironment('APP_URL', $defaultAppUrl), '/');
+    $mailProvider = strtolower(trim(getApplicationEnvironment('MAIL_PROVIDER', 'smtp')));
     $mailFrom = trim(getApplicationEnvironment('MAIL_FROM'));
-    $smtpUsername = trim(getApplicationEnvironment('SMTP_USERNAME'));
-    $smtpPassword = getApplicationEnvironment('SMTP_PASSWORD');
-    $smtpHost = trim(getApplicationEnvironment('SMTP_HOST', 'smtp.gmail.com'));
-    $smtpPort = filter_var(getApplicationEnvironment('SMTP_PORT', '587'), FILTER_VALIDATE_INT);
-    $smtpSecure = strtolower(trim(getApplicationEnvironment('SMTP_SECURE', 'tls')));
-    $smtpAuthSetting = getApplicationEnvironment('SMTP_AUTH', 'true');
-    $smtpAuth = $smtpAuthSetting === false
-        ? true
-        : filter_var($smtpAuthSetting, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
     $appUrlParts = filter_var($appUrl, FILTER_VALIDATE_URL) ? parse_url($appUrl) : false;
-    $localSmtpHost = in_array(strtolower($smtpHost), ['localhost', '127.0.0.1', '::1'], true);
     if (
         !$appUrlParts
         || !isset($appUrlParts['scheme'], $appUrlParts['host'])
         || !in_array(strtolower($appUrlParts['scheme']), ['http', 'https'], true)
         || array_intersect(['user', 'pass', 'query', 'fragment'], array_keys($appUrlParts)) !== []
         || !filter_var($mailFrom, FILTER_VALIDATE_EMAIL)
-        || $smtpHost === ''
-        || $smtpPort === false
-        || $smtpPort < 1
-        || $smtpPort > 65535
-        || !in_array($smtpSecure, ['tls', 'ssl', 'none'], true)
-        || $smtpAuth === null
-        || ($smtpAuth && (!filter_var($smtpUsername, FILTER_VALIDATE_EMAIL) || $smtpPassword === ''))
-        || ($smtpSecure === 'none' && (!$localSmtpHost || $smtpAuth))
     ) {
         throw new RuntimeException('Password recovery email settings are missing or invalid.');
     }
 
-    $autoloadPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
-    if (!is_file($autoloadPath)) {
-        throw new RuntimeException('Composer dependencies are missing; run composer install.');
-    }
-    require_once $autoloadPath;
-    if (!class_exists(\PHPMailer\PHPMailer\PHPMailer::class)) {
-        throw new RuntimeException('PHPMailer is not installed; run composer install.');
+    $smtpUsername = '';
+    $smtpPassword = '';
+    $smtpHost = '';
+    $smtpPort = false;
+    $smtpSecure = '';
+    $smtpAuth = true;
+    $brevoApiKey = '';
+    if ($mailProvider === 'brevo') {
+        $brevoApiKey = trim(getApplicationEnvironment('BREVO_API_KEY'));
+        if ($brevoApiKey === '' || !function_exists('curl_init')) {
+            throw new RuntimeException('Brevo email settings are missing or the PHP cURL extension is unavailable.');
+        }
+    } elseif ($mailProvider === 'smtp') {
+        $smtpUsername = trim(getApplicationEnvironment('SMTP_USERNAME'));
+        $smtpPassword = getApplicationEnvironment('SMTP_PASSWORD');
+        $smtpHost = trim(getApplicationEnvironment('SMTP_HOST', 'smtp.gmail.com'));
+        $smtpPort = filter_var(getApplicationEnvironment('SMTP_PORT', '587'), FILTER_VALIDATE_INT);
+        $smtpSecure = strtolower(trim(getApplicationEnvironment('SMTP_SECURE', 'tls')));
+        $smtpAuthSetting = getApplicationEnvironment('SMTP_AUTH', 'true');
+        $smtpAuth = $smtpAuthSetting === false
+            ? true
+            : filter_var($smtpAuthSetting, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        $localSmtpHost = in_array(strtolower($smtpHost), ['localhost', '127.0.0.1', '::1'], true);
+        if (
+            $smtpHost === ''
+            || $smtpPort === false
+            || $smtpPort < 1
+            || $smtpPort > 65535
+            || !in_array($smtpSecure, ['tls', 'ssl', 'none'], true)
+            || $smtpAuth === null
+            || ($smtpAuth && (!filter_var($smtpUsername, FILTER_VALIDATE_EMAIL) || $smtpPassword === ''))
+            || ($smtpSecure === 'none' && (!$localSmtpHost || $smtpAuth))
+        ) {
+            throw new RuntimeException('Password recovery email settings are missing or invalid.');
+        }
+
+        $autoloadPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+        if (!is_file($autoloadPath)) {
+            throw new RuntimeException('Composer dependencies are missing; run composer install.');
+        }
+        require_once $autoloadPath;
+        if (!class_exists(\PHPMailer\PHPMailer\PHPMailer::class)) {
+            throw new RuntimeException('PHPMailer is not installed; run composer install.');
+        }
+    } else {
+        throw new RuntimeException('MAIL_PROVIDER must be set to smtp or brevo.');
     }
 
     $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE email = ? LIMIT 1');
@@ -1184,39 +1206,86 @@ function sendPasswordResetEmail($email) {
         . $resetUrl . "\n\n"
         . "If you did not request this, you can ignore this email.";
 
+    $mailer = null;
     try {
-        $mailer = new \PHPMailer\PHPMailer\PHPMailer(true);
-        $mailer->isSMTP();
-        $mailer->Host = $smtpHost;
-        $mailer->SMTPAuth = $smtpAuth;
-        if ($smtpAuth) {
-            $mailer->Username = $smtpUsername;
-            $mailer->Password = $smtpPassword;
+        if ($mailProvider === 'brevo') {
+            $payload = json_encode([
+                'sender' => ['name' => 'BakeTrack', 'email' => $mailFrom],
+                'to' => [['email' => $user['email'], 'name' => $user['fullname']]],
+                'subject' => 'BakeTrack password reset',
+                'textContent' => $message
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $request = curl_init('https://api.brevo.com/v3/smtp/email');
+            if ($request === false) {
+                throw new RuntimeException('Unable to initialize the Brevo email request.');
+            }
+            if (!curl_setopt_array($request, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $payload,
+                CURLOPT_HTTPHEADER => [
+                    'accept: application/json',
+                    'api-key: ' . $brevoApiKey,
+                    'content-type: application/json'
+                ],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTPS
+            ])) {
+                curl_close($request);
+                throw new RuntimeException('Unable to configure the Brevo email request.');
+            }
+            $response = curl_exec($request);
+            $curlError = curl_error($request);
+            $statusCode = curl_getinfo($request, CURLINFO_RESPONSE_CODE);
+            curl_close($request);
+            if ($response === false) {
+                throw new RuntimeException('Brevo email API request failed: ' . $curlError);
+            }
+            if ($statusCode < 200 || $statusCode >= 300) {
+                throw new RuntimeException('Brevo email API returned HTTP ' . $statusCode . '.');
+            }
+        } else {
+            $mailer = new \PHPMailer\PHPMailer\PHPMailer(true);
+            $mailer->isSMTP();
+            $mailer->Host = $smtpHost;
+            $mailer->SMTPAuth = $smtpAuth;
+            if ($smtpAuth) {
+                $mailer->Username = $smtpUsername;
+                $mailer->Password = $smtpPassword;
+            }
+            $mailer->SMTPSecure = match ($smtpSecure) {
+                'tls' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS,
+                'ssl' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS,
+                default => ''
+            };
+            $mailer->Port = $smtpPort;
+            $mailer->CharSet = 'UTF-8';
+            $mailer->setFrom($mailFrom, 'BakeTrack');
+            $mailer->addAddress($user['email'], $user['fullname']);
+            $mailer->Subject = 'BakeTrack password reset';
+            $mailer->Body = $message;
+            $mailer->send();
         }
-        $mailer->SMTPSecure = match ($smtpSecure) {
-            'tls' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS,
-            'ssl' => \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS,
-            default => ''
-        };
-        $mailer->Port = $smtpPort;
-        $mailer->CharSet = 'UTF-8';
-        $mailer->setFrom($mailFrom, 'BakeTrack');
-        $mailer->addAddress($user['email'], $user['fullname']);
-        $mailer->Subject = 'BakeTrack password reset';
-        $mailer->Body = $message;
-        $mailer->send();
     } catch (Throwable $mailError) {
         $remove = $conn->prepare('DELETE FROM password_reset_tokens WHERE token_hash = ?');
         $remove->bind_param('s', $tokenHash);
         $remove->execute();
-        $diagnostic = $mailer->ErrorInfo !== '' ? $mailer->ErrorInfo : $mailError->getMessage();
+        $mailerError = $mailer instanceof \PHPMailer\PHPMailer\PHPMailer ? $mailer->ErrorInfo : '';
+        $diagnostic = $mailerError !== '' ? $mailerError : $mailError->getMessage();
         $secretsToRedact = array_filter(
-            [$smtpUsername, $smtpPassword, $user['email']],
+            [$brevoApiKey, $smtpUsername, $smtpPassword, $user['email']],
             static fn($value) => $value !== ''
         );
         $diagnostic = str_replace($secretsToRedact, '[redacted]', $diagnostic);
-        error_log('Gmail SMTP reset mail failed: ' . $diagnostic);
-        throw new RuntimeException('The password reset email could not be sent through Gmail SMTP.', 0, $mailError);
+        error_log(ucfirst($mailProvider) . ' password reset email failed: ' . $diagnostic);
+        throw new RuntimeException(
+            'The password reset email could not be sent through ' . ucfirst($mailProvider) . '.',
+            0,
+            $mailError
+        );
     }
 }
 

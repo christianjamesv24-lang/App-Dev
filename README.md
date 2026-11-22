@@ -32,15 +32,18 @@ spending limit at zero to stay within its free quota.
 
 Render Free services sleep after 15 minutes without traffic and have ephemeral
 filesystems. Uploaded product images are lost on restarts, sleeps, and
-redeploys. Render Free also has no Shell access and blocks outbound SMTP ports,
-so password-recovery email is unavailable. Use this setup only for a
-non-production demo, not live bakery records.
+redeploys. Render Free also has no Shell access and blocks outbound SMTP ports.
+Password-recovery email uses Brevo's HTTPS API; configure `BREVO_API_KEY` and
+`MAIL_FROM` in Render after creating and verifying a sender in Brevo. Use this
+setup only for a non-production demo, not live bakery records.
 
 Create a separate TiDB database named `baketrack_demo` and apply
 `database/schema.sql` to it. Do not import `database/baketrack.sql`, which
 contains development data. When creating the Render Blueprint, set `DB_HOST`,
 `DB_USER`, and `DB_PASS` from TiDB's connection details; the remaining
-connection settings are preconfigured for TiDB TLS.
+connection settings are preconfigured for TiDB TLS. Add the Brevo API key to
+`BREVO_API_KEY` and set `MAIL_FROM` to a sender address verified in Brevo.
+Keep the API key only in Render's environment settings.
 
 To create the first administrator, run `php scripts/create-admin.php` from a
 trusted local terminal with the TiDB connection variables available in the
@@ -78,7 +81,8 @@ Set these Vercel environment variables for the project:
   default; set `DB_SSL_CA` only if TiDB supplies a different CA certificate
   path.
 - `APP_URL` to the app's public HTTPS URL (recommended for password recovery).
-- The `SMTP_*` settings if account recovery emails should be sent.
+- Either `MAIL_PROVIDER=smtp` with the `SMTP_*` settings, or
+  `MAIL_PROVIDER=brevo` with `BREVO_API_KEY` and a verified `MAIL_FROM` sender.
 
 Create a **public** Vercel Blob store and connect it to the project. The SDK
 uses Vercel's short-lived OIDC credentials when available; if the container
@@ -113,10 +117,16 @@ composer install
 
 ## Password recovery email
 
-The **Forgot?** link sends a one-time password reset link through Gmail SMTP.
-The link expires after one hour, and requesting another link invalidates the
-previous one. The recovery form uses a generic response so it does not reveal
-whether an email address has an account.
+The **Forgot?** link sends a one-time password reset link through the selected
+email provider. The link expires after one hour, and requesting another link
+invalidates the previous one. The recovery form uses a generic response so it
+does not reveal whether an email address has an account.
+
+On Render Free, set `MAIL_PROVIDER=brevo` and configure `BREVO_API_KEY` and
+`MAIL_FROM` in the Render environment. Create a Brevo account, verify a sender
+address there, and use that address as `MAIL_FROM`. The app uses Brevo's HTTPS
+API, so SMTP port restrictions do not apply. Do not send API keys in chat or
+commit them to the repository.
 
 To send mail from Gmail:
 
