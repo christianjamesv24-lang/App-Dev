@@ -1105,7 +1105,7 @@ function sendPasswordResetEmail($email) {
     $defaultAppUrl = $vercelUrl !== ''
         ? 'https://' . $vercelUrl
         : getApplicationEnvironment('RENDER_EXTERNAL_URL');
-    $appUrl = rtrim(getApplicationEnvironment('APP_URL', $defaultAppUrl), '/');
+    $appUrl = rtrim(trim(getApplicationEnvironment('APP_URL', $defaultAppUrl)), '/');
     $mailProvider = strtolower(trim(getApplicationEnvironment('MAIL_PROVIDER', 'smtp')));
     $mailFrom = trim(getApplicationEnvironment('MAIL_FROM'));
     $appUrlParts = filter_var($appUrl, FILTER_VALIDATE_URL) ? parse_url($appUrl) : false;
