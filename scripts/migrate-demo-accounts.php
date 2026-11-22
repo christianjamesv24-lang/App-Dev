@@ -113,7 +113,7 @@ $accounts = [
 ];
 
 foreach ($accounts as &$account) {
-    $account['password_hash'] = password_hash($account['password'], PASSWORD_DEFAULT);
+    $account['password_hash'] = password_hash($account['password'], PASSWORD_BCRYPT);
     if (!is_string($account['password_hash'])) {
         throw new RuntimeException('Unable to hash an account password.');
     }

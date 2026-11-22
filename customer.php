@@ -197,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <div class="product-rating">
                         <i class="fas fa-star" style="color: #F39C12;"></i>
-                        <span><?= $avg_rating ?> (<?= $review_count ?> reviews)</span>
+                        <span><?= (int) $review_count === 0 ? '0.0%' : $avg_rating . ' (' . $review_count . ' reviews)' ?></span>
                     </div>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">
                         <?= ucfirst($product['status']) ?>
@@ -210,6 +210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 </div>
                 <?php endwhile; ?>
             </div>
+            <p id="searchEmpty" class="empty-state" style="display: none;">Not Available</p>
 
             <!-- Order Modal -->
             <div id="orderModal" class="modal">
@@ -604,10 +605,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     function filterProducts() {
         const input = document.getElementById('searchProduct').value.toLowerCase();
         const cards = document.querySelectorAll('.product-card');
+        let visible = 0;
         cards.forEach(card => {
             const name = card.getAttribute('data-name') || '';
-            card.style.display = name.includes(input) ? '' : 'none';
+            const matches = name.includes(input);
+            card.style.display = matches ? '' : 'none';
+            if (matches) visible++;
         });
+        const emptyMessage = document.getElementById('searchEmpty');
+        if (emptyMessage) emptyMessage.style.display = visible === 0 ? 'block' : 'none';
     }
     
     // Order functions

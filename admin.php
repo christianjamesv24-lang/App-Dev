@@ -54,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
             && isValidPassword($password)
             && !userExists($username, $email)
         ) {
-            $password_hash = password_hash($password, PASSWORD_DEFAULT);
+            $password_hash = password_hash($password, PASSWORD_BCRYPT);
             $assistant_stmt = $conn->prepare(
                 "INSERT INTO users (username, password, email, fullname, role, is_active)
                  VALUES (?, ?, ?, ?, 'assistant', 1)"
@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
     } elseif ($target_id > 0 && $action === 'change_password') {
         $password = $_POST['password'] ?? '';
         if (isValidPassword($password)) {
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+            $hashed_password = password_hash($password, PASSWORD_BCRYPT);
             $password_stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ? AND is_active = 1");
             $password_stmt->bind_param('si', $hashed_password, $target_id);
             $updated = $password_stmt->execute();
@@ -371,6 +371,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 </div>
                 <?php endwhile; ?>
             </div>
+            <p id="searchEmpty" class="empty-state" style="display: none;">Not Available</p>
             <?php endif; ?>
 
             <!-- ==================== UPLOADS ==================== -->
@@ -1150,10 +1151,15 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
     function filterProducts() {
         const input = document.getElementById('searchProduct').value.toLowerCase();
         const cards = document.querySelectorAll('.product-card');
+        let visible = 0;
         cards.forEach(card => {
             const name = card.getAttribute('data-name') || '';
-            card.style.display = name.includes(input) ? '' : 'none';
+            const matches = name.includes(input);
+            card.style.display = matches ? '' : 'none';
+            if (matches) visible++;
         });
+        const emptyMessage = document.getElementById('searchEmpty');
+        if (emptyMessage) emptyMessage.style.display = visible === 0 ? 'block' : 'none';
     }
     
     // Close modal on outside click

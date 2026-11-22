@@ -132,7 +132,7 @@ function getUserById($id) {
  */
 function getUserByLogin($login) {
     global $conn;
-    $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (BINARY username = ? OR BINARY email = ?)");
     $stmt->bind_param("ss", $login, $login);
     $stmt->execute();
     return $stmt->get_result()->fetch_assoc();
@@ -249,7 +249,7 @@ function anonymizeUserAccount($targetId, $adminId) {
         $suffix = bin2hex(random_bytes(6));
         $username = 'deleted_' . $targetId . '_' . $suffix;
         $email = 'deleted+' . $targetId . '.' . $suffix . '@example.invalid';
-        $passwordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
+        $passwordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_BCRYPT);
         $anonymize_stmt = $conn->prepare(
             "UPDATE users SET username = ?, email = ?, fullname = 'Deleted account', password = ?, is_active = 0 WHERE id = ?"
         );
@@ -1436,7 +1436,7 @@ function sendPasswordResetEmail($email) {
         throw new RuntimeException('MAIL_PROVIDER must be set to smtp or brevo.');
     }
 
-    $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE email = ? AND is_active = 1 LIMIT 1');
+    $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE BINARY email = ? AND is_active = 1 LIMIT 1');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
@@ -1608,7 +1608,7 @@ function resetPasswordWithToken($token, $password) {
             return false;
         }
 
-        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+        $passwordHash = password_hash($password, PASSWORD_BCRYPT);
         $update = $conn->prepare('UPDATE users SET password = ? WHERE id = ?');
         $update->bind_param('si', $passwordHash, $reset['user_id']);
         if (!$update->execute() || $update->affected_rows !== 1) {
@@ -1730,10 +1730,10 @@ function getUsersByRole($role = null) {
 function userExists($username, $email = null) {
     global $conn;
     if ($email) {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (BINARY username = ? OR BINARY email = ?)");
         $stmt->bind_param("ss", $username, $email);
     } else {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND username = ?");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND BINARY username = ?");
         $stmt->bind_param("s", $username);
     }
     $stmt->execute();
@@ -1748,7 +1748,7 @@ function createUser($username, $email, $password, $fullname, $role = 'customer')
     if (!isValidPassword($password) || !in_array($role, ['admin', 'assistant', 'customer'], true)) {
         throw new InvalidArgumentException('Use a valid role and a password of at least ' . MIN_PASSWORD_LENGTH . ' characters.');
     }
-    $hashed = password_hash($password, PASSWORD_DEFAULT);
+    $hashed = password_hash($password, PASSWORD_BCRYPT);
     $stmt = $conn->prepare("INSERT INTO users (username, email, password, fullname, role, is_active) VALUES (?, ?, ?, ?, ?, 1)");
     $stmt->bind_param("sssss", $username, $email, $hashed, $fullname, $role);
     return $stmt->execute();
@@ -1788,7 +1788,7 @@ function changeUserPassword($id, $new_password) {
     if (!isValidPassword($new_password)) {
         return false;
     }
-    $hashed = password_hash($new_password, PASSWORD_DEFAULT);
+    $hashed = password_hash($new_password, PASSWORD_BCRYPT);
     $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ? AND is_active = 1");
     $stmt->bind_param("si", $hashed, $id);
     return $stmt->execute();
@@ -1947,10 +1947,47 @@ function saveSiteContent($submittedContent) {
 // ============================
 
 /**
- * Validate email
+ * Validate email using the application's strict format rule:
+ * exactly one @, a dot in the domain, and no whitespace.
  */
 function isValidEmail($email) {
+    if (!is_string($email) || preg_match('/\s/', $email)) {
+        return false;
+    }
+    if (substr_count($email, '@') !== 1) {
+        return false;
+    }
+    [$localPart, $domain] = explode('@', $email, 2);
+    if ($localPart === '' || $domain === '' || strpos($domain, '.') === false
+        || str_starts_with($domain, '.') || str_ends_with($domain, '.')) {
+        return false;
+    }
     return filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
+}
+
+function containsHtmlMarkup($value) {
+    return is_string($value) && preg_match('/<[^>]*>/', $value) === 1;
+}
+
+function containsDigit($value) {
+    return is_string($value) && preg_match('/\d/', $value) === 1;
+}
+
+function containsMalformedNameSymbol($value) {
+    return is_string($value) && preg_match('/[^\p{L}\s\-]/u', $value) === 1;
+}
+
+function nameValidationMessage($value) {
+    if (containsHtmlMarkup($value)) {
+        return 'Rejected';
+    }
+    if (containsDigit($value)) {
+        return 'No Account is registered';
+    }
+    if (containsMalformedNameSymbol($value)) {
+        return 'No account with a malformed name is stored';
+    }
+    return '';
 }
 
 /**

@@ -30,119 +30,125 @@ $resetToken = isset($_GET['token']) && is_string($_GET['token']) ? $_GET['token'
 
 // Handle Sign In
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signin'])) {
-    $username = $_POST['username'];
-    $password = $_POST['password'];
-    
-    $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
-    $stmt->bind_param("ss", $username, $username);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    
-    if ($user = $result->fetch_assoc()) {
-        if (password_verify($password, $user['password'])) {
-            session_regenerate_id(true);
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['username'] = $user['username'];
-            $_SESSION['role'] = $user['role'];
-            $_SESSION['fullname'] = $user['fullname'];
-            $_SESSION['last_activity'] = time();
-            
-            switch($user['role']) {
-                case 'admin': header('Location: admin.php'); break;
-                case 'assistant': header('Location: assistant.php'); break;
-                default: header('Location: customer.php'); break;
-            }
-            exit();
-        } else {
-            $error = 'Invalid password!';
-        }
+    $mode = 'signin';
+    $username = isset($_POST['username']) && is_string($_POST['username']) ? $_POST['username'] : '';
+    $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
+
+    if ($username === '') {
+        $error = 'Email is required';
+    } elseif ($password === '') {
+        $error = 'Password is required';
+    } elseif (preg_match('/\s/', $username)) {
+        $error = 'Rejected';
+    } elseif (str_contains($username, '@') && !isValidEmail($username)) {
+        $error = 'Invalid Email Format';
     } else {
-        $error = 'User not found!';
+        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (BINARY username = ? OR BINARY email = ?)");
+        $stmt->bind_param("ss", $username, $username);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        if ($user = $result->fetch_assoc()) {
+            if (password_verify($password, $user['password'])) {
+                session_regenerate_id(true);
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['username'] = $user['username'];
+                $_SESSION['role'] = $user['role'];
+                $_SESSION['fullname'] = $user['fullname'];
+                $_SESSION['last_activity'] = time();
+
+                switch($user['role']) {
+                    case 'admin': header('Location: admin.php'); break;
+                    case 'assistant': header('Location: assistant.php'); break;
+                    default: header('Location: customer.php'); break;
+                }
+                exit();
+            } else {
+                $error = 'Invalid password!';
+            }
+        } else {
+            $error = 'User not found!';
+        }
     }
 }
 
 // Handle Sign Up - UPDATED with First Name, Last Name, Email, Password, Confirm Password
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
-    $firstname = trim($_POST['firstname']);
-    $lastname = trim($_POST['lastname']);
-    $email = trim($_POST['email']);
-    $password = $_POST['password'];
-    $confirm_password = $_POST['confirm_password'];
-    
-    // Validation
+    $firstname = isset($_POST['firstname']) && is_string($_POST['firstname']) ? trim($_POST['firstname']) : '';
+    $lastname = isset($_POST['lastname']) && is_string($_POST['lastname']) ? trim($_POST['lastname']) : '';
+    $email = isset($_POST['email']) && is_string($_POST['email']) ? $_POST['email'] : '';
+    $password = isset($_POST['password']) && is_string($_POST['password']) ? $_POST['password'] : '';
+    $confirm_password = isset($_POST['confirm_password']) && is_string($_POST['confirm_password']) ? $_POST['confirm_password'] : '';
+
     $errors = [];
-    
-    // Check if fields are empty
-    if (empty($firstname)) {
-        $errors[] = 'First name is required!';
+
+    if ($firstname === '') {
+        $errors[] = 'First Name is required';
+    } else {
+        $nameMessage = nameValidationMessage($firstname);
+        if ($nameMessage !== '') {
+            $errors[] = $nameMessage;
+        }
     }
-    if (empty($lastname)) {
-        $errors[] = 'Last name is required!';
+    if ($lastname === '') {
+        $errors[] = 'Last Name is required';
+    } else {
+        $nameMessage = nameValidationMessage($lastname);
+        if ($nameMessage !== '') {
+            $errors[] = $nameMessage;
+        }
     }
-    if (empty($email)) {
-        $errors[] = 'Email is required!';
+    if ($email === '') {
+        $errors[] = 'Email is required';
+    } elseif (preg_match('/\s/', $email)) {
+        $errors[] = 'Rejected';
+    } elseif (!isValidEmail($email)) {
+        $errors[] = 'Invalid Email Format';
     }
-    if (empty($password)) {
-        $errors[] = 'Password is required!';
-    }
-    if (empty($confirm_password)) {
-        $errors[] = 'Please confirm your password!';
-    }
-    
-    // Validate email format
-    if (!empty($email) && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errors[] = 'Invalid email format!';
-    }
-    
-    // Validate password length
-    if (!empty($password) && !isValidPassword($password)) {
+    if ($password === '') {
+        $errors[] = 'Password is required';
+    } elseif (!isValidPassword($password)) {
         $errors[] = 'Password must be at least ' . MIN_PASSWORD_LENGTH . ' characters!';
     }
-    
-    // Check if passwords match
-    if (!empty($password) && !empty($confirm_password) && $password !== $confirm_password) {
-        $errors[] = 'Passwords do not match!';
+    if ($confirm_password === '') {
+        $errors[] = 'Please confirm your password';
+    } elseif ($password !== '') {
+        if ($password !== $confirm_password) {
+            $errors[] = 'Passwords do not match!';
+        }
     }
-    
-    // If no errors, proceed with registration
+
     if (empty($errors)) {
-        // Combine firstname and lastname
         $fullname = $firstname . ' ' . $lastname;
-        
-        // Check if email already exists
-        $check = $conn->prepare("SELECT * FROM users WHERE email = ?");
+
+        $check = $conn->prepare("SELECT id FROM users WHERE BINARY email = ? LIMIT 1");
         $check->bind_param("s", $email);
         $check->execute();
-        
+
         if ($check->get_result()->num_rows > 0) {
             $error = 'Email already registered! Please use a different email.';
         } else {
-            // Hash password
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-            
-            // Generate username from firstname.lastname
-            $username = strtolower($firstname . '.' . $lastname);
-            
-            // Make sure username is unique
-            $base_username = $username;
+            $hashed_password = password_hash($password, PASSWORD_BCRYPT);
+
+            $base_username = strtolower($firstname . '.' . $lastname);
+            $username = $base_username;
             $counter = 1;
             while (true) {
-                $check_user = $conn->prepare("SELECT * FROM users WHERE username = ?");
+                $check_user = $conn->prepare("SELECT id FROM users WHERE BINARY username = ? LIMIT 1");
                 $check_user->bind_param("s", $username);
                 $check_user->execute();
-                if ($check_user->get_result()->num_rows == 0) {
+                if ($check_user->get_result()->num_rows === 0) {
                     break;
                 }
                 $username = $base_username . $counter;
                 $counter++;
             }
-            
-            // Insert user with role 'customer' by default
+
             $stmt = $conn->prepare("INSERT INTO users (username, password, email, fullname, role) VALUES (?, ?, ?, ?, 'customer')");
             $stmt->bind_param("ssss", $username, $hashed_password, $email, $fullname);
-            
+
             if ($stmt->execute()) {
-                $success = 'Account created successfully! Please sign in.';
+                $success = 'Registration is Accepted';
                 $mode = 'signin';
             } else {
                 $error = 'Registration failed! Please try again.';
@@ -253,7 +259,7 @@ if ($mode === 'reset') {
 
             <!-- Sign In Form -->
             <?php if ($mode === 'signin'): ?>
-            <form method="POST" class="auth-form">
+            <form method="POST" class="auth-form" id="signinForm" novalidate>
                 <?= csrfField() ?>
                 <div class="form-group">
                     <label><i class="fas fa-user"></i> Username or Email</label>
@@ -273,7 +279,7 @@ if ($mode === 'reset') {
 
             <!-- Sign Up Form - UPDATED with First Name, Last Name, Email, Password, Confirm Password -->
             <?php if ($mode === 'signup'): ?>
-            <form method="POST" class="auth-form" id="signupForm">
+            <form method="POST" class="auth-form" id="signupForm" novalidate>
                 <?= csrfField() ?>
                 <div class="form-group">
                     <label><i class="fas fa-user"></i> First Name</label>
@@ -311,7 +317,7 @@ if ($mode === 'reset') {
 
             <!-- Recover Form -->
             <?php if ($mode === 'recover'): ?>
-            <form method="POST" class="auth-form">
+            <form method="POST" class="auth-form" id="recoverForm" novalidate>
                 <?= csrfField() ?>
                 <p class="auth-description">Enter the email address on your account. If it matches, we’ll send you a secure link that expires in one hour.</p>
                 <div class="form-group">
@@ -422,24 +428,77 @@ if ($mode === 'reset') {
         }
     }
 
-    // Form validation before submit
+    // Custom validation messages (native browser email messages are disabled with novalidate)
+    function hasValidEmailFormat(value) {
+        if (/\s/.test(value)) return false;
+        if ((value.match(/@/g) || []).length !== 1) return false;
+        const parts = value.split('@');
+        const domain = parts[1];
+        return parts[0] !== '' && domain !== '' && domain.includes('.')
+            && !domain.startsWith('.') && !domain.endsWith('.');
+    }
+
+    function nameValidationMessage(value) {
+        if (/<[^>]*>/.test(value)) return 'Rejected';
+        if (/\d/.test(value)) return 'No Account is registered';
+        if (/[^\p{L}\s\-]/u.test(value)) return 'No account with a malformed name is stored';
+        return '';
+    }
+
+    const signinForm = document.getElementById('signinForm');
+    if (signinForm) {
+        signinForm.addEventListener('submit', function(e) {
+            const username = this.elements.username.value;
+            const password = this.elements.password.value;
+            let message = '';
+            if (username === '') message = 'Email is required';
+            else if (password === '') message = 'Password is required';
+            else if (/\s/.test(username)) message = 'Rejected';
+            else if (username.includes('@') && !hasValidEmailFormat(username)) message = 'Invalid Email Format';
+            if (message) { e.preventDefault(); alert(message); }
+        });
+    }
+
     const signupForm = document.getElementById('signupForm');
     if (signupForm) {
         signupForm.addEventListener('submit', function(e) {
-            const password = document.getElementById('signupPassword').value;
-            const confirm = document.getElementById('confirmPassword').value;
-            
-            if (password !== confirm) {
-                e.preventDefault();
-                alert('Passwords do not match!');
-                return false;
+            const firstname = this.elements.firstname.value.trim();
+            const lastname = this.elements.lastname.value.trim();
+            const email = this.elements.email.value;
+            const password = this.elements.password.value;
+            const confirm = this.elements.confirm_password.value;
+
+            let message = '';
+            if (firstname === '') message = 'First Name is required';
+            else message = nameValidationMessage(firstname);
+            if (!message) {
+                if (lastname === '') message = 'Last Name is required';
+                else message = nameValidationMessage(lastname);
             }
-            
-            if (password.length < <?= MIN_PASSWORD_LENGTH ?>) {
-                e.preventDefault();
-                alert('Password must be at least <?= MIN_PASSWORD_LENGTH ?> characters!');
-                return false;
+            if (!message) {
+                if (email === '') message = 'Email is required';
+                else if (/\s/.test(email)) message = 'Rejected';
+                else if (!hasValidEmailFormat(email)) message = 'Invalid Email Format';
             }
+            if (!message && password === '') message = 'Password is required';
+            if (!message && confirm === '') message = 'Please confirm your password';
+            if (!message && password !== confirm) message = 'Passwords do not match!';
+            if (!message && password.length < <?= MIN_PASSWORD_LENGTH ?>) {
+                message = 'Password must be at least <?= MIN_PASSWORD_LENGTH ?> characters!';
+            }
+            if (message) { e.preventDefault(); alert(message); }
+        });
+    }
+
+    const recoverForm = document.getElementById('recoverForm');
+    if (recoverForm) {
+        recoverForm.addEventListener('submit', function(e) {
+            const email = this.elements.email.value;
+            let message = '';
+            if (email === '') message = 'Email is required';
+            else if (/\s/.test(email)) message = 'Rejected';
+            else if (!hasValidEmailFormat(email)) message = 'Invalid Email Format';
+            if (message) { e.preventDefault(); alert(message); }
         });
     }
     </script>
