@@ -1,10 +1,17 @@
 <?php
+if (isset($_SERVER['SCRIPT_FILENAME']) && realpath($_SERVER['SCRIPT_FILENAME']) === realpath(__FILE__)) {
+    http_response_code(404);
+    exit;
+}
+
 /**
  * BAKE TRACK - Functions Library
  * Reusable functions for the entire application
  */
 
 require_once dirname(__DIR__) . '/config.php';
+
+define('MIN_PASSWORD_LENGTH', 8);
 
 function getApplicationEnvironment($name, $default = '') {
     if (isset($_ENV[$name]) && is_string($_ENV[$name])) {
@@ -16,6 +23,40 @@ function getApplicationEnvironment($name, $default = '') {
 
     $value = getenv($name);
     return $value === false ? $default : (string) $value;
+}
+
+function csrfToken() {
+    if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token']) || !preg_match('/\A[a-f0-9]{64}\z/', $_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
+}
+
+function csrfField() {
+    return '<input type="hidden" name="csrf_token" value="' .
+        htmlspecialchars(csrfToken(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '">';
+}
+
+function requireValidCsrfToken() {
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return;
+    }
+
+    $submittedToken = $_POST['csrf_token'] ?? null;
+    if (!is_string($submittedToken) || !hash_equals(csrfToken(), $submittedToken)) {
+        http_response_code(403);
+        exit('Invalid request token.');
+    }
+}
+
+function getOrderSubmissionKey() {
+    if (!isset($_SESSION['order_submission_key']) || !is_string($_SESSION['order_submission_key'])
+        || !preg_match('/\A[a-f0-9]{64}\z/', $_SESSION['order_submission_key'])) {
+        $_SESSION['order_submission_key'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['order_submission_key'];
 }
 
 // ============================
@@ -67,7 +108,7 @@ function getCurrentUser() {
     global $conn;
     $user_id = getCurrentUserId();
     if ($user_id > 0) {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE id = ?");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE id = ? AND is_active = 1");
         $stmt->bind_param("i", $user_id);
         $stmt->execute();
         return $stmt->get_result()->fetch_assoc();
@@ -91,7 +132,7 @@ function getUserById($id) {
  */
 function getUserByLogin($login) {
     global $conn;
-    $stmt = $conn->prepare("SELECT * FROM users WHERE username = ? OR email = ?");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
     $stmt->bind_param("ss", $login, $login);
     $stmt->execute();
     return $stmt->get_result()->fetch_assoc();
@@ -139,7 +180,20 @@ function requireLogin() {
  * Require a specific authenticated role and preserve role-based redirects.
  */
 function requireRole($role, $allowAdmin = false) {
+    global $conn;
     requireLogin();
+
+    $currentUserId = (int) getCurrentUserId();
+    $active_stmt = $conn->prepare('SELECT is_active FROM users WHERE id = ?');
+    $active_stmt->bind_param('i', $currentUserId);
+    $active_stmt->execute();
+    $activeUser = $active_stmt->get_result()->fetch_assoc();
+    if (!$activeUser || (int) $activeUser['is_active'] !== 1) {
+        $_SESSION = [];
+        session_destroy();
+        header('Location: auth.php');
+        exit();
+    }
 
     $hasRequiredRole = getCurrentUserRole() === $role;
     $isAllowedAdmin = $allowAdmin && isAdmin();
@@ -171,6 +225,51 @@ function requireAssistant() {
  */
 function requireCustomer() {
     requireRole('customer');
+}
+
+function anonymizeUserAccount($targetId, $adminId) {
+    global $conn;
+
+    if ($targetId <= 0 || $targetId === $adminId) {
+        return false;
+    }
+
+    ensurePasswordResetTable();
+    $conn->begin_transaction();
+    try {
+        $user_stmt = $conn->prepare('SELECT role, is_active FROM users WHERE id = ? FOR UPDATE');
+        $user_stmt->bind_param('i', $targetId);
+        $user_stmt->execute();
+        $target = $user_stmt->get_result()->fetch_assoc();
+        if (!$target || $target['role'] === 'admin' || (int) $target['is_active'] !== 1) {
+            $conn->rollback();
+            return false;
+        }
+
+        $suffix = bin2hex(random_bytes(6));
+        $username = 'deleted_' . $targetId . '_' . $suffix;
+        $email = 'deleted+' . $targetId . '.' . $suffix . '@example.invalid';
+        $passwordHash = password_hash(bin2hex(random_bytes(32)), PASSWORD_DEFAULT);
+        $anonymize_stmt = $conn->prepare(
+            "UPDATE users SET username = ?, email = ?, fullname = 'Deleted account', password = ?, is_active = 0 WHERE id = ?"
+        );
+        $anonymize_stmt->bind_param('sssi', $username, $email, $passwordHash, $targetId);
+        if (!$anonymize_stmt->execute() || $anonymize_stmt->affected_rows !== 1) {
+            throw new RuntimeException('Unable to anonymize the account.');
+        }
+
+        $token_stmt = $conn->prepare('DELETE FROM password_reset_tokens WHERE user_id = ?');
+        $token_stmt->bind_param('i', $targetId);
+        if (!$token_stmt->execute()) {
+            throw new RuntimeException('Unable to invalidate the account reset tokens.');
+        }
+
+        $conn->commit();
+        return true;
+    } catch (Throwable $error) {
+        $conn->rollback();
+        throw $error;
+    }
 }
 
 // ============================
@@ -378,29 +477,143 @@ function addOrderItem($order_id, $product_id, $quantity, $price) {
     return $stmt->execute();
 }
 
+function createOnlineOrder($userId, $items, $submissionKey) {
+    global $conn;
+
+    if ($userId <= 0 || !is_string($submissionKey) || !preg_match('/\A[a-f0-9]{64}\z/', $submissionKey) || !is_array($items) || $items === []) {
+        throw new InvalidArgumentException('Choose products and submit a valid order request.');
+    }
+
+    $quantities = [];
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            throw new InvalidArgumentException('Choose valid products and quantities.');
+        }
+
+        $productId = filter_var($item['id'] ?? null, FILTER_VALIDATE_INT);
+        $quantity = filter_var($item['quantity'] ?? null, FILTER_VALIDATE_INT);
+        if ($productId === false || $productId <= 0 || $quantity === false || $quantity <= 0) {
+            throw new InvalidArgumentException('Choose whole-number product quantities greater than zero.');
+        }
+
+        $quantities[$productId] = ($quantities[$productId] ?? 0) + $quantity;
+        if ($quantities[$productId] > 2147483647) {
+            throw new InvalidArgumentException('The requested quantity is too large.');
+        }
+    }
+    ksort($quantities, SORT_NUMERIC);
+
+    $conn->begin_transaction();
+    try {
+        $existing_stmt = $conn->prepare('SELECT id FROM orders WHERE user_id = ? AND idempotency_key = ? LIMIT 1');
+        $existing_stmt->bind_param('is', $userId, $submissionKey);
+        $existing_stmt->execute();
+        $existingOrder = $existing_stmt->get_result()->fetch_assoc();
+        if ($existingOrder) {
+            $conn->commit();
+            return (int) $existingOrder['id'];
+        }
+
+        $product_stmt = $conn->prepare("SELECT price, quantity, status FROM products WHERE id = ? FOR UPDATE");
+        $validatedItems = [];
+        $total = 0.0;
+        foreach ($quantities as $productId => $quantity) {
+            $product_stmt->bind_param('i', $productId);
+            if (!$product_stmt->execute()) {
+                throw new RuntimeException('Unable to verify product inventory.');
+            }
+            $product = $product_stmt->get_result()->fetch_assoc();
+            if (!$product || $product['status'] !== 'available' || (int) $product['quantity'] < $quantity) {
+                throw new RuntimeException('One or more products are unavailable or out of stock.');
+            }
+
+            $price = (float) $product['price'];
+            $total += $price * $quantity;
+            $validatedItems[] = ['id' => $productId, 'quantity' => $quantity, 'price' => $price];
+        }
+        if (!is_finite($total) || $total <= 0) {
+            throw new InvalidArgumentException('The order total must be greater than zero.');
+        }
+
+        $status = 'waiting';
+        $order_stmt = $conn->prepare(
+            'INSERT INTO orders (user_id, total, status, idempotency_key) VALUES (?, ?, ?, ?)'
+        );
+        $order_stmt->bind_param('idss', $userId, $total, $status, $submissionKey);
+        if (!$order_stmt->execute()) {
+            throw new RuntimeException('Unable to save the order.');
+        }
+        $orderId = (int) $conn->insert_id;
+
+        $item_stmt = $conn->prepare(
+            'INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)'
+        );
+        $stock_stmt = $conn->prepare(
+            "UPDATE products
+             SET quantity = quantity - ?,
+                 status = CASE WHEN quantity - ? > 0 THEN 'available' ELSE 'not available' END
+             WHERE id = ? AND quantity >= ?"
+        );
+        foreach ($validatedItems as $item) {
+            $productId = $item['id'];
+            $quantity = $item['quantity'];
+            $price = $item['price'];
+            $item_stmt->bind_param('iiid', $orderId, $productId, $quantity, $price);
+            if (!$item_stmt->execute()) {
+                throw new RuntimeException('Unable to save the order items.');
+            }
+            $stock_stmt->bind_param('iiii', $quantity, $quantity, $productId, $quantity);
+            if (!$stock_stmt->execute() || $stock_stmt->affected_rows !== 1) {
+                throw new RuntimeException('Product inventory changed during checkout.');
+            }
+        }
+
+        $conn->commit();
+        return $orderId;
+    } catch (Throwable $error) {
+        $conn->rollback();
+        if ($error instanceof mysqli_sql_exception && $error->getCode() === 1062) {
+            $existing_stmt = $conn->prepare('SELECT id FROM orders WHERE user_id = ? AND idempotency_key = ? LIMIT 1');
+            $existing_stmt->bind_param('is', $userId, $submissionKey);
+            $existing_stmt->execute();
+            $existingOrder = $existing_stmt->get_result()->fetch_assoc();
+            if ($existingOrder) {
+                return (int) $existingOrder['id'];
+            }
+        }
+        throw $error;
+    }
+}
+
 /**
  * Update order status
  */
 function updateOrderStatus($order_id, $status) {
-    global $conn;
-    $stmt = $conn->prepare("UPDATE orders SET status = ? WHERE id = ?");
-    $stmt->bind_param("si", $status, $order_id);
-    return $stmt->execute();
+    return transitionOrder($order_id, $status, '', getCurrentUserRole(), (int) getCurrentUserId());
 }
 
 /**
  * Update an order and create its sale transaction exactly once when completed.
  */
-function transitionOrder($order_id, $status, $reason = '') {
+function transitionOrder($order_id, $status, $reason = '', $actorRole = null, $actorId = null) {
     global $conn;
-    $allowed_statuses = ['waiting', 'preparing', 'ready', 'completed'];
-    if ($order_id <= 0 || !in_array($status, $allowed_statuses, true)) {
+    $allowed_transitions = [
+        'admin' => ['waiting' => ['preparing'], 'preparing' => ['waiting', 'ready'], 'ready' => ['completed']],
+        'assistant' => ['waiting' => ['preparing'], 'preparing' => ['waiting', 'ready'], 'ready' => ['completed']],
+        'customer' => ['ready' => ['completed']]
+    ];
+    if (
+        $order_id <= 0
+        || !is_string($actorRole)
+        || !isset($allowed_transitions[$actorRole])
+        || !in_array($status, ['waiting', 'preparing', 'ready', 'completed'], true)
+    ) {
         return false;
     }
 
     $conn->begin_transaction();
     try {
-        $order_stmt = $conn->prepare("SELECT user_id, total FROM orders WHERE id = ? FOR UPDATE");
+        $order_stmt = $conn->prepare("SELECT user_id, total, status FROM orders WHERE id = ? FOR UPDATE");
         $order_stmt->bind_param('i', $order_id);
         if (!$order_stmt->execute()) {
             throw new RuntimeException('Unable to retrieve the order.');
@@ -408,6 +621,18 @@ function transitionOrder($order_id, $status, $reason = '') {
         $order = $order_stmt->get_result()->fetch_assoc();
         if (!$order) {
             throw new RuntimeException('Order not found.');
+        }
+
+        if ($actorRole === 'customer' && (int) $order['user_id'] !== (int) $actorId) {
+            throw new RuntimeException('The customer cannot update another customer’s order.');
+        }
+        if ($order['status'] === $status) {
+            if ($status !== 'completed' || $actorRole !== 'customer') {
+                $conn->commit();
+                return true;
+            }
+        } elseif (!in_array($status, $allowed_transitions[$actorRole][$order['status']] ?? [], true)) {
+            throw new RuntimeException('That order status transition is not allowed.');
         }
 
         if ($reason !== '') {
@@ -467,9 +692,15 @@ function ensureOrderCustomerNameColumn() {
     $checked = true;
 }
 
-function createCashSale($user_id, $items, $payment, $customerName = '') {
+function createCashSale($user_id, $items, $payment, $customerName = '', $submissionKey = null) {
     global $conn;
-    if ($user_id <= 0 || !is_array($items) || $items === [] || !is_numeric($payment)) {
+    if (
+        $user_id <= 0
+        || !is_array($items)
+        || $items === []
+        || !is_numeric($payment)
+        || ($submissionKey !== null && (!is_string($submissionKey) || !preg_match('/\A[a-f0-9]{64}\z/', $submissionKey)))
+    ) {
         throw new InvalidArgumentException('Add products and a valid payment amount.');
     }
     if (!is_string($customerName)) {
@@ -495,10 +726,22 @@ function createCashSale($user_id, $items, $payment, $customerName = '') {
         }
         $quantities[$product_id] = ($quantities[$product_id] ?? 0) + $quantity;
     }
+    ksort($quantities, SORT_NUMERIC);
 
     ensureOrderCustomerNameColumn();
     $conn->begin_transaction();
     try {
+        if ($submissionKey !== null) {
+            $existing_stmt = $conn->prepare('SELECT id FROM orders WHERE user_id = ? AND idempotency_key = ? LIMIT 1');
+            $existing_stmt->bind_param('is', $user_id, $submissionKey);
+            $existing_stmt->execute();
+            $existingOrder = $existing_stmt->get_result()->fetch_assoc();
+            if ($existingOrder) {
+                $conn->commit();
+                return (int) $existingOrder['id'];
+            }
+        }
+
         $product_stmt = $conn->prepare("SELECT name, price, quantity FROM products WHERE id = ? FOR UPDATE");
         $stock_stmt = $conn->prepare("UPDATE products SET quantity = quantity - ?, status = CASE WHEN quantity - ? > 0 THEN 'available' ELSE 'not available' END WHERE id = ? AND quantity >= ?");
         $item_stmt = $conn->prepare("INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)");
@@ -526,8 +769,11 @@ function createCashSale($user_id, $items, $payment, $customerName = '') {
 
         $change = $payment - $total;
         $status = 'completed';
-        $order_stmt = $conn->prepare("INSERT INTO orders (user_id, customer_name, total, payment, change_amount, status) VALUES (?, ?, ?, ?, ?, ?)");
-        $order_stmt->bind_param('isddds', $user_id, $customerName, $total, $payment, $change, $status);
+        $order_stmt = $conn->prepare(
+            'INSERT INTO orders (user_id, customer_name, total, payment, change_amount, status, idempotency_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        $order_stmt->bind_param('isdddss', $user_id, $customerName, $total, $payment, $change, $status, $submissionKey);
         if (!$order_stmt->execute()) {
             throw new RuntimeException('Unable to save the sale.');
         }
@@ -560,6 +806,15 @@ function createCashSale($user_id, $items, $payment, $customerName = '') {
         return $order_id;
     } catch (Throwable $error) {
         $conn->rollback();
+        if ($submissionKey !== null && $error instanceof mysqli_sql_exception && $error->getCode() === 1062) {
+            $existing_stmt = $conn->prepare('SELECT id FROM orders WHERE user_id = ? AND idempotency_key = ? LIMIT 1');
+            $existing_stmt->bind_param('is', $user_id, $submissionKey);
+            $existing_stmt->execute();
+            $existingOrder = $existing_stmt->get_result()->fetch_assoc();
+            if ($existingOrder) {
+                return (int) $existingOrder['id'];
+            }
+        }
         throw $error;
     }
 }
@@ -582,20 +837,34 @@ function getOrderStatusCount($status) {
 /**
  * Get all transactions
  */
-function getAllTransactions() {
+function getAllTransactions($page = 1, $pageSize = 100) {
     global $conn;
-    return $conn->query("SELECT t.*, u.fullname as user FROM transactions t 
-                         JOIN users u ON t.user_id = u.id 
-                         ORDER BY t.transaction_date DESC");
+    $page = max(1, (int) $page);
+    $pageSize = min(100, max(1, (int) $pageSize));
+    $offset = ($page - 1) * $pageSize;
+    $limit = $pageSize + 1;
+    $stmt = $conn->prepare(
+        'SELECT t.*, u.fullname as user FROM transactions t
+         JOIN users u ON t.user_id = u.id
+         ORDER BY t.transaction_date DESC, t.id DESC
+         LIMIT ? OFFSET ?'
+    );
+    $stmt->bind_param('ii', $limit, $offset);
+    $stmt->execute();
+    return $stmt->get_result();
 }
 
 /**
  * Get user transactions
  */
-function getUserTransactions($user_id) {
+function getUserTransactions($user_id, $page = 1, $pageSize = 100) {
     global $conn;
-    $stmt = $conn->prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY transaction_date DESC");
-    $stmt->bind_param("i", $user_id);
+    $page = max(1, (int) $page);
+    $pageSize = min(100, max(1, (int) $pageSize));
+    $offset = ($page - 1) * $pageSize;
+    $limit = $pageSize + 1;
+    $stmt = $conn->prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY transaction_date DESC, id DESC LIMIT ? OFFSET ?");
+    $stmt->bind_param("iii", $user_id, $limit, $offset);
     $stmt->execute();
     return $stmt->get_result();
 }
@@ -800,7 +1069,7 @@ function getDashboardStats() {
     $stats['products'] = $result->fetch_assoc()['count'];
     
     // Users count
-    $result = $conn->query("SELECT COUNT(*) as count FROM users WHERE role = 'customer'");
+    $result = $conn->query("SELECT COUNT(*) as count FROM users WHERE role = 'customer' AND is_active = 1");
     $stats['customers'] = $result->fetch_assoc()['count'];
     
     // Orders count by status
@@ -1167,7 +1436,7 @@ function sendPasswordResetEmail($email) {
         throw new RuntimeException('MAIL_PROVIDER must be set to smtp or brevo.');
     }
 
-    $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE email = ? LIMIT 1');
+    $stmt = $conn->prepare('SELECT id, fullname, email FROM users WHERE email = ? AND is_active = 1 LIMIT 1');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
@@ -1315,7 +1584,11 @@ function isPasswordResetTokenValid($token) {
 function resetPasswordWithToken($token, $password) {
     global $conn;
 
-    if (!is_string($token) || !preg_match('/\A[a-f0-9]{64}\z/', $token)) {
+    if (
+        !is_string($token)
+        || !preg_match('/\A[a-f0-9]{64}\z/', $token)
+        || !isValidPassword($password)
+    ) {
         return false;
     }
 
@@ -1443,12 +1716,12 @@ function getTableCount($table) {
 function getUsersByRole($role = null) {
     global $conn;
     if ($role) {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE role = ? ORDER BY created_at DESC");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE role = ? AND is_active = 1 ORDER BY created_at DESC");
         $stmt->bind_param("s", $role);
         $stmt->execute();
         return $stmt->get_result();
     }
-    return $conn->query("SELECT * FROM users ORDER BY created_at DESC");
+    return $conn->query("SELECT * FROM users WHERE is_active = 1 ORDER BY created_at DESC");
 }
 
 /**
@@ -1457,10 +1730,10 @@ function getUsersByRole($role = null) {
 function userExists($username, $email = null) {
     global $conn;
     if ($email) {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE username = ? OR email = ?");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
         $stmt->bind_param("ss", $username, $email);
     } else {
-        $stmt = $conn->prepare("SELECT * FROM users WHERE username = ?");
+        $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND username = ?");
         $stmt->bind_param("s", $username);
     }
     $stmt->execute();
@@ -1472,8 +1745,11 @@ function userExists($username, $email = null) {
  */
 function createUser($username, $email, $password, $fullname, $role = 'customer') {
     global $conn;
+    if (!isValidPassword($password) || !in_array($role, ['admin', 'assistant', 'customer'], true)) {
+        throw new InvalidArgumentException('Use a valid role and a password of at least ' . MIN_PASSWORD_LENGTH . ' characters.');
+    }
     $hashed = password_hash($password, PASSWORD_DEFAULT);
-    $stmt = $conn->prepare("INSERT INTO users (username, email, password, fullname, role) VALUES (?, ?, ?, ?, ?)");
+    $stmt = $conn->prepare("INSERT INTO users (username, email, password, fullname, role, is_active) VALUES (?, ?, ?, ?, ?, 1)");
     $stmt->bind_param("sssss", $username, $email, $hashed, $fullname, $role);
     return $stmt->execute();
 }
@@ -1509,8 +1785,11 @@ function updateUser($id, $data) {
  */
 function changeUserPassword($id, $new_password) {
     global $conn;
+    if (!isValidPassword($new_password)) {
+        return false;
+    }
     $hashed = password_hash($new_password, PASSWORD_DEFAULT);
-    $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
+    $stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ? AND is_active = 1");
     $stmt->bind_param("si", $hashed, $id);
     return $stmt->execute();
 }
@@ -1678,7 +1957,7 @@ function isValidEmail($email) {
  * Validate password strength
  */
 function isValidPassword($password) {
-    return strlen($password) >= 6;
+    return is_string($password) && strlen($password) >= MIN_PASSWORD_LENGTH;
 }
 
 /**

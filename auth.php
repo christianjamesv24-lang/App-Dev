@@ -1,5 +1,6 @@
 <?php
 require_once 'includes/functions.php';
+requireValidCsrfToken();
 
 $mode = isset($_GET['mode']) && is_string($_GET['mode']) ? $_GET['mode'] : 'signin';
 if (!in_array($mode, ['signin', 'signup', 'recover', 'reset'], true)) {
@@ -32,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signin'])) {
     $username = $_POST['username'];
     $password = $_POST['password'];
     
-    $stmt = $conn->prepare("SELECT * FROM users WHERE username = ? OR email = ?");
+    $stmt = $conn->prepare("SELECT * FROM users WHERE is_active = 1 AND (username = ? OR email = ?)");
     $stmt->bind_param("ss", $username, $username);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -94,8 +95,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['signup'])) {
     }
     
     // Validate password length
-    if (!empty($password) && strlen($password) < 6) {
-        $errors[] = 'Password must be at least 6 characters!';
+    if (!empty($password) && !isValidPassword($password)) {
+        $errors[] = 'Password must be at least ' . MIN_PASSWORD_LENGTH . ' characters!';
     }
     
     // Check if passwords match
@@ -178,8 +179,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reset_password'])) {
         ? $_POST['confirm_password']
         : '';
 
-    if (strlen($password) < 8) {
-        $error = 'Choose a password with at least 8 characters.';
+    if (!isValidPassword($password)) {
+        $error = 'Choose a password with at least ' . MIN_PASSWORD_LENGTH . ' characters.';
     } elseif ($password !== $confirmPassword) {
         $error = 'The passwords do not match.';
     } else {
@@ -253,6 +254,7 @@ if ($mode === 'reset') {
             <!-- Sign In Form -->
             <?php if ($mode === 'signin'): ?>
             <form method="POST" class="auth-form">
+                <?= csrfField() ?>
                 <div class="form-group">
                     <label><i class="fas fa-user"></i> Username or Email</label>
                     <input type="text" name="username" required placeholder="Enter username or email">
@@ -272,6 +274,7 @@ if ($mode === 'reset') {
             <!-- Sign Up Form - UPDATED with First Name, Last Name, Email, Password, Confirm Password -->
             <?php if ($mode === 'signup'): ?>
             <form method="POST" class="auth-form" id="signupForm">
+                <?= csrfField() ?>
                 <div class="form-group">
                     <label><i class="fas fa-user"></i> First Name</label>
                     <input type="text" name="firstname" required placeholder="Enter your first name">
@@ -286,7 +289,7 @@ if ($mode === 'reset') {
                 </div>
                 <div class="form-group">
                     <label><i class="fas fa-lock"></i> Password</label>
-                    <input type="password" name="password" id="signupPassword" required placeholder="Create password (min 6 chars)" onkeyup="checkPasswordStrength()">
+                    <input type="password" name="password" id="signupPassword" minlength="<?= MIN_PASSWORD_LENGTH ?>" required placeholder="Create password (min <?= MIN_PASSWORD_LENGTH ?> chars)" onkeyup="checkPasswordStrength()">
                     <div class="show-password-control">
                         <input type="checkbox" id="showSignupPassword" class="show-password-checkbox" data-target-id="signupPassword">
                         <label for="showSignupPassword">Show password</label>
@@ -309,6 +312,7 @@ if ($mode === 'reset') {
             <!-- Recover Form -->
             <?php if ($mode === 'recover'): ?>
             <form method="POST" class="auth-form">
+                <?= csrfField() ?>
                 <p class="auth-description">Enter the email address on your account. If it matches, we’ll send you a secure link that expires in one hour.</p>
                 <div class="form-group">
                     <label for="recoveryEmail"><i class="fas fa-envelope"></i> Email Address</label>
@@ -321,14 +325,15 @@ if ($mode === 'reset') {
             <?php if ($mode === 'reset' && $resetTokenValid): ?>
             <h3 class="auth-form-title">Choose a new password</h3>
             <form method="POST" class="auth-form">
+                <?= csrfField() ?>
                 <input type="hidden" name="token" value="<?= htmlspecialchars($resetToken, ENT_QUOTES, 'UTF-8') ?>">
                 <div class="form-group">
                     <label for="resetPassword"><i class="fas fa-lock"></i> New Password</label>
-                    <input type="password" id="resetPassword" name="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters">
+                    <input type="password" id="resetPassword" name="password" autocomplete="new-password" minlength="<?= MIN_PASSWORD_LENGTH ?>" required placeholder="At least <?= MIN_PASSWORD_LENGTH ?> characters">
                 </div>
                 <div class="form-group">
                     <label for="confirmResetPassword"><i class="fas fa-check-circle"></i> Confirm Password</label>
-                    <input type="password" id="confirmResetPassword" name="confirm_password" autocomplete="new-password" minlength="8" required placeholder="Enter the new password again">
+                    <input type="password" id="confirmResetPassword" name="confirm_password" autocomplete="new-password" minlength="<?= MIN_PASSWORD_LENGTH ?>" required placeholder="Enter the new password again">
                 </div>
                 <button type="submit" name="reset_password" value="1" class="btn btn-primary btn-block">Update password</button>
             </form>
@@ -430,9 +435,9 @@ if ($mode === 'reset') {
                 return false;
             }
             
-            if (password.length < 6) {
+            if (password.length < <?= MIN_PASSWORD_LENGTH ?>) {
                 e.preventDefault();
-                alert('Password must be at least 6 characters!');
+                alert('Password must be at least <?= MIN_PASSWORD_LENGTH ?> characters!');
                 return false;
             }
         });

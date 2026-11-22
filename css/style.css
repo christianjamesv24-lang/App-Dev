@@ -2356,6 +2356,36 @@ textarea {
     border-top: 1px solid rgba(255, 255, 255, .14);
 }
 
+.sidebar-nav .logout-form {
+    margin: 0 12px;
+}
+
+.sidebar-nav .logout-form .logout-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 20px;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 3px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--danger);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.sidebar-nav .logout-form .logout-btn:hover {
+    background: rgba(255, 255, 255, .06);
+    color: white;
+}
+
+.dark-mode .sidebar-nav .logout-form .logout-btn {
+    color: #e0e0e0;
+}
+
 .main-content {
     width: 100%;
     min-width: 0;

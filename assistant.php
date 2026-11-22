@@ -1,5 +1,6 @@
 <?php
 require_once 'includes/functions.php';
+requireValidCsrfToken();
 
 requireAssistant();
 
@@ -11,6 +12,11 @@ if (!is_string($requested_page) || !in_array($requested_page, $allowed_pages, tr
     exit();
 }
 $page = $requested_page;
+$orderPages = [];
+foreach (['waiting', 'preparing', 'ready'] as $orderStatus) {
+    $orderPage = filter_var($_GET[$orderStatus . '_page'] ?? 1, FILTER_VALIDATE_INT);
+    $orderPages[$orderStatus] = $orderPage && $orderPage > 0 ? $orderPage : 1;
+}
 if ($page === 'report') {
     ensureOrderCustomerNameColumn();
 }
@@ -41,8 +47,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
 // Handle direct sales using inventory prices and locked stock rows.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_report'])) {
     $items = json_decode($_POST['products'] ?? '', true);
+    $submissionKey = $_POST['submission_key'] ?? '';
+    $expectedKey = $_SESSION['order_submission_key'] ?? '';
+    if (
+        !is_string($submissionKey)
+        || !preg_match('/\A[a-f0-9]{64}\z/', $submissionKey)
+        || !is_string($expectedKey)
+        || !hash_equals($expectedKey, $submissionKey)
+    ) {
+        header('Location: assistant.php?page=report&error=invalid');
+        exit();
+    }
     try {
-        createCashSale($user_id, $items, $_POST['payment'] ?? null, $_POST['customer_name'] ?? '');
+        createCashSale($user_id, $items, $_POST['payment'] ?? null, $_POST['customer_name'] ?? '', $submissionKey);
+        unset($_SESSION['order_submission_key']);
         header('Location: assistant.php?page=report&saved=1');
     } catch (InvalidArgumentException $error) {
         header('Location: assistant.php?page=report&error=invalid');
@@ -53,13 +71,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_report'])) {
     exit();
 }
 
-if (isset($_GET['action'], $_GET['order_id'])) {
-    $order_id = filter_var($_GET['order_id'], FILTER_VALIDATE_INT);
-    $status = $_GET['action'];
-    $reason = isset($_GET['reason']) && is_string($_GET['reason']) ? trim($_GET['reason']) : '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order'])) {
+    $order_id = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT);
+    $status = isset($_POST['status']) && is_string($_POST['status']) ? $_POST['status'] : '';
+    $reason = isset($_POST['reason']) && is_string($_POST['reason']) ? trim($_POST['reason']) : '';
     if ($order_id && in_array($status, ['waiting', 'preparing', 'ready', 'completed'], true)) {
         try {
-            transitionOrder($order_id, $status, $reason);
+            transitionOrder($order_id, $status, $reason, getCurrentUserRole(), (int) $user_id);
             header('Location: assistant.php?page=orders&updated=1');
         } catch (Throwable $error) {
             error_log('Assistant order update failed: ' . $error->getMessage());
@@ -77,7 +95,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
     <title>BakeTrack - Assistant</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
-<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>" data-live-orders="<?= $page === 'orders' ? 'true' : 'false' ?>">
+<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>" data-live-orders="<?= $page === 'orders' ? 'true' : 'false' ?>" data-csrf-token="<?= htmlspecialchars(csrfToken(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
     <div class="dashboard-container">
         <!-- Sidebar -->
         <aside class="sidebar" id="dashboard-sidebar">
@@ -109,9 +127,10 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 <a href="?page=settings" class="<?= $page === 'settings' ? 'active' : '' ?>" <?= $page === 'settings' ? 'aria-current="page"' : '' ?>>
                     <i class="fas fa-cog"></i> Settings
                 </a>
-                <a href="logout.php" class="logout-btn">
-                    <i class="fas fa-sign-out-alt"></i> Logout
-                </a>
+                <form method="POST" action="logout.php" class="logout-form">
+                    <?= csrfField() ?>
+                    <button type="submit" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Logout</button>
+                </form>
             </nav>
         </aside>
 
@@ -168,14 +187,18 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 <?php 
                 $statuses = ['waiting', 'preparing', 'ready'];
                 foreach ($statuses as $status):
+                $orderPage = $orderPages[$status];
+                $orderOffset = ($orderPage - 1) * 100;
                 $orders = $conn->query("SELECT o.*, u.fullname as customer FROM orders o 
                     JOIN users u ON o.user_id = u.id 
                     WHERE o.status = '$status' 
-                    ORDER BY o.order_date DESC");
+                    ORDER BY o.order_date DESC, o.id DESC
+                    LIMIT 101 OFFSET $orderOffset");
+                $orderHasMore = $orders->num_rows > 100;
                 ?>
                 <div class="order-list" id="tab-<?= $status ?>" style="<?= $status === 'waiting' ? 'display:block' : 'display:none' ?>">
                     <?php if ($orders->num_rows > 0): ?>
-                        <?php while ($order = $orders->fetch_assoc()): ?>
+                        <?php $orderShown = 0; while ($orderShown < 100 && ($order = $orders->fetch_assoc())): $orderShown++; ?>
                         <div class="order-card">
                             <div class="order-header">
                                 <span class="order-id">#<?= $order['id'] ?></span>
@@ -195,12 +218,27 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                                         <i class="fas fa-utensils"></i> Done Preparing
                                     </button>
                                     <?php endif; ?>
+                                    <?php if ($status === 'ready'): ?>
+                                    <button class="btn btn-success" onclick="updateOrder(<?= $order['id'] ?>, 'completed')">
+                                        <i class="fas fa-check"></i> Mark Completed
+                                    </button>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                         </div>
                         <?php endwhile; ?>
                     <?php else: ?>
                         <p class="empty-state">No orders in <?= $status ?></p>
+                    <?php endif; ?>
+                    <?php if ($orderPage > 1 || $orderHasMore): ?>
+                    <nav class="pagination-controls" aria-label="<?= htmlspecialchars(ucfirst($status), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> order pages">
+                        <?php if ($orderPage > 1): ?>
+                        <a href="?page=orders&<?= $status ?>_page=<?= $orderPage - 1 ?>">Previous</a>
+                        <?php endif; ?>
+                        <?php if ($orderHasMore): ?>
+                        <a href="?page=orders&<?= $status ?>_page=<?= $orderPage + 1 ?>">Next</a>
+                        <?php endif; ?>
+                    </nav>
                     <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
@@ -214,11 +252,25 @@ if (isset($_GET['action'], $_GET['order_id'])) {
             </div>
             <div class="transactions-list">
                 <?php 
-                $transactions = $conn->query("SELECT t.*, u.fullname as user FROM transactions t 
-                    JOIN users u ON t.user_id = u.id 
-                    ORDER BY t.transaction_date DESC");
+                $transactionPage = filter_var($_GET['transactions_page'] ?? 1, FILTER_VALIDATE_INT);
+                $transactionPage = $transactionPage && $transactionPage > 0 ? $transactionPage : 1;
+                $transactionOffset = ($transactionPage - 1) * 100;
+                $transactionLimit = 101;
+                $transactions_stmt = $conn->prepare(
+                    'SELECT t.*, u.fullname as user FROM transactions t
+                     JOIN users u ON t.user_id = u.id
+                     WHERE t.user_id = ?
+                     ORDER BY t.transaction_date DESC, t.id DESC
+                     LIMIT ? OFFSET ?'
+                );
+                $transactions_stmt->bind_param('iii', $user_id, $transactionLimit, $transactionOffset);
+                $transactions_stmt->execute();
+                $transactions = $transactions_stmt->get_result();
+                $transactionsHaveMore = $transactions->num_rows > 100;
+                $transactionsShown = 0;
                 if ($transactions->num_rows > 0):
-                while ($trans = $transactions->fetch_assoc()): 
+                while ($transactionsShown < 100 && ($trans = $transactions->fetch_assoc())):
+                $transactionsShown++;
                 ?>
                 <div class="transaction-item">
                     <div class="trans-info">
@@ -232,6 +284,16 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 <?php endwhile; ?>
                 <?php else: ?>
                 <p class="empty-state">📭 No transactions yet</p>
+                <?php endif; ?>
+                <?php if ($transactionPage > 1 || $transactionsHaveMore): ?>
+                <nav class="pagination-controls" aria-label="Transaction pages">
+                    <?php if ($transactionPage > 1): ?>
+                    <a href="?page=transactions&transactions_page=<?= $transactionPage - 1 ?>">Previous</a>
+                    <?php endif; ?>
+                    <?php if ($transactionsHaveMore): ?>
+                    <a href="?page=transactions&transactions_page=<?= $transactionPage + 1 ?>">Next</a>
+                    <?php endif; ?>
+                </nav>
                 <?php endif; ?>
             </div>
             <?php endif; ?>
@@ -251,6 +313,9 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                     <span class="close" onclick="closeSellForm()">&times;</span>
                     <h2>New Direct Sell</h2>
                     <form id="sellForm" method="POST">
+                        <?= csrfField() ?>
+                        <input type="hidden" name="submit_report" value="1">
+                        <input type="hidden" name="submission_key" value="<?= htmlspecialchars(getOrderSubmissionKey(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
                         <div id="productItems">
                             <div class="sell-item">
                                 <div class="form-group">
@@ -262,7 +327,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                                         while ($p = $products->fetch_assoc()):
                                         ?>
                                         <option value="<?= $p['id'] ?>" data-price="<?= $p['price'] ?>">
-                                            <?= $p['name'] ?> (₱<?= number_format($p['price'], 2) ?>)
+                                            <?= htmlspecialchars($p['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (₱<?= number_format($p['price'], 2) ?>)
                                         </option>
                                         <?php endwhile; ?>
                                     </select>
@@ -309,7 +374,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                         
                         <div class="sell-actions">
                             <button type="button" class="btn btn-danger" onclick="closeSellForm()">Cancel</button>
-                            <button type="submit" name="submit_report" class="btn btn-primary">Save Report</button>
+                            <button type="submit" class="btn btn-primary">Save Report</button>
                         </div>
                     </form>
                 </div>
@@ -322,7 +387,8 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 $sells = $conn->query("SELECT o.*, u.fullname as assistant FROM orders o 
                     JOIN users u ON o.user_id = u.id 
                     WHERE o.status = 'completed' AND o.user_id = $user_id
-                    ORDER BY o.order_date DESC");
+                    ORDER BY o.order_date DESC
+                    LIMIT 10");
                 if ($sells->num_rows > 0):
                 ?>
                 <div class="sold-list">
@@ -378,7 +444,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                             while ($p = $products->fetch_assoc()):
                             ?>
                             <option value="<?= $p['id'] ?>" data-price="<?= $p['price'] ?>">
-                                <?= $p['name'] ?> (₱<?= number_format($p['price'], 2) ?>)
+                                <?= htmlspecialchars($p['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (₱<?= number_format($p['price'], 2) ?>)
                             </option>
                             <?php endwhile; ?>
                         </select>
@@ -513,14 +579,15 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 <div class="message-compose">
                     <h3>Send Message</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <select name="receiver_id" required>
                                 <option value="">Select Recipient</option>
                                 <?php 
-                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id");
+                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id AND is_active = 1");
                                 while ($u = $users->fetch_assoc()):
                                 ?>
-                                <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['fullname']) ?> (<?= $u['role'] ?>)</option>
+                                <option value="<?= (int) $u['id'] ?>"><?= htmlspecialchars($u['fullname'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (<?= htmlspecialchars($u['role'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>)</option>
                                 <?php endwhile; ?>
                             </select>
                         </div>
@@ -573,6 +640,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                 <div class="settings-card">
                     <h3>Profile Information</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <label>Full Name</label>
                             <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>" required>
@@ -583,7 +651,7 @@ if (isset($_GET['action'], $_GET['order_id'])) {
                         </div>
                         <div class="form-group">
                             <label>Email</label>
-                            <input type="email" value="<?= $user['email'] ?>" disabled>
+                            <input type="email" value="<?= htmlspecialchars($user['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>" disabled>
                             <small>Email cannot be changed</small>
                         </div>
                         <div class="form-group">
@@ -638,7 +706,23 @@ if (isset($_GET['action'], $_GET['order_id'])) {
 
     function updateOrder(orderId, status) {
         if (confirm(`Update order #${orderId} to ${status}?`)) {
-            window.location.href = `?page=orders&action=${encodeURIComponent(status)}&order_id=${encodeURIComponent(orderId)}`;
+            const form = document.createElement('form');
+            form.method = 'POST';
+            const fields = {
+                csrf_token: document.body.dataset.csrfToken,
+                update_order: '1',
+                order_id: orderId,
+                status
+            };
+            Object.entries(fields).forEach(([name, value]) => {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = name;
+                input.value = value;
+                form.appendChild(input);
+            });
+            document.body.appendChild(form);
+            form.submit();
         }
     }
     </script>

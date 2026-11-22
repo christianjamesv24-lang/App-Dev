@@ -13,6 +13,9 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+COPY apache-hardening.conf /etc/apache2/conf-available/baketrack-hardening.conf
+RUN a2enconf baketrack-hardening
+
 WORKDIR /var/www/html
 COPY composer.json composer.lock ./
 RUN composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
