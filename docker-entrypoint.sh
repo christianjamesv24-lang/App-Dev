@@ -50,4 +50,6 @@ do
     sleep 2
 done
 
+php /var/www/html/scripts/migrate.php
+
 exec apache2-foreground

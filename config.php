@@ -1,4 +1,10 @@
 <?php
+$requestedFile = isset($_SERVER['SCRIPT_FILENAME']) ? realpath($_SERVER['SCRIPT_FILENAME']) : false;
+if ($requestedFile !== false && $requestedFile === realpath(__FILE__)) {
+    http_response_code(404);
+    exit;
+}
+
 $projectRoot = __DIR__;
 $composerAutoload = $projectRoot . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
 if (is_file($composerAutoload)) {
@@ -54,8 +60,17 @@ if ($dbSslEnabled) {
     }
 }
 $clientFlags = $dbSslEnabled ? MYSQLI_CLIENT_SSL : 0;
-if (!$conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, null, $clientFlags)) {
-    die("Connection failed: " . $conn->connect_error);
+try {
+    $connected = $conn->real_connect(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT, null, $clientFlags);
+} catch (mysqli_sql_exception $error) {
+    error_log('Database connection failed: ' . $error->getMessage());
+    http_response_code(503);
+    exit('Service temporarily unavailable. Please try again later.');
+}
+if (!$connected) {
+    error_log('Database connection failed.');
+    http_response_code(503);
+    exit('Service temporarily unavailable. Please try again later.');
 }
 if (!$conn->set_charset('utf8mb4')) {
     throw new RuntimeException('Unable to set the database character set.');

@@ -23,6 +23,15 @@ the server-calculated total, payment, and change. Existing databases gain the
 optional `orders.customer_name` field automatically when an assistant opens
 the direct-sales report.
 
+New databases should be created from `database/schema.sql`. The Docker image
+applies `scripts/migrate.php` automatically at startup, so earlier databases
+gain active-account tracking, order idempotency, and the indexes used by the
+paginated order and transaction lists without a manual step. For non-Docker
+deployments, apply the equivalent `database/migrations/20261122_graybox_hardening.sql`
+once. Deleting a user account now deactivates and anonymizes it while retaining
+order and review history. Password creation and reset require at least eight
+characters.
+
 ## Deploy a free Render demo
 
 The root `render.yaml` defines a single Free Docker web service. It expects an

@@ -1,5 +1,6 @@
 <?php
 require_once 'includes/functions.php';
+requireValidCsrfToken();
 
 requireCustomer();
 
@@ -11,6 +12,9 @@ if (!is_string($requested_page) || !in_array($requested_page, $allowed_pages, tr
     exit();
 }
 $page = $requested_page;
+$orderPage = filter_var($_GET['orders_page'] ?? 1, FILTER_VALIDATE_INT);
+$orderPage = $orderPage && $orderPage > 0 ? $orderPage : 1;
+$orderOffset = ($orderPage - 1) * 100;
 
 // Get user info
 $user = $conn->query("SELECT * FROM users WHERE id = $user_id")->fetch_assoc();
@@ -20,15 +24,15 @@ if ($page === 'messages') {
     $read_stmt->execute();
 }
 
-if (isset($_GET['action'], $_GET['order_id']) && $_GET['action'] === 'received') {
-    $order_id = filter_var($_GET['order_id'], FILTER_VALIDATE_INT);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['received_order'])) {
+    $order_id = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT);
     $order_stmt = $conn->prepare("SELECT id FROM orders WHERE id = ? AND user_id = ? AND status = 'ready'");
     if ($order_id) {
         $order_stmt->bind_param('ii', $order_id, $user_id);
         $order_stmt->execute();
         if ($order_stmt->get_result()->fetch_assoc()) {
             try {
-                transitionOrder($order_id, 'completed');
+                transitionOrder($order_id, 'completed', '', 'customer', (int) $user_id);
                 header('Location: customer.php?page=orders&received=1');
             } catch (Throwable $error) {
                 error_log('Customer order receipt failed: ' . $error->getMessage());
@@ -58,79 +62,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
 
 // Handle Order Request
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
-    $products = json_decode($_POST['products'] ?? '', true);
-    $total = (float) ($_POST['total'] ?? 0);
-
-    if (!is_array($products) || count($products) === 0 || $total <= 0) {
-        echo "<script>alert('Unable to place order: your cart is empty.'); window.location='customer.php?page=bakery';</script>";
+    $submissionKey = $_POST['submission_key'] ?? '';
+    $productsJson = $_POST['products'] ?? '';
+    $products = is_string($productsJson) ? json_decode($productsJson, true) : null;
+    $expectedKey = $_SESSION['order_submission_key'] ?? '';
+    if (
+        !is_string($submissionKey)
+        || !preg_match('/\A[a-f0-9]{64}\z/', $submissionKey)
+        || !is_string($expectedKey)
+        || !hash_equals($expectedKey, $submissionKey)
+        || !is_array($products)
+        || $products === []
+    ) {
+        header('Location: customer.php?page=bakery&error=order');
         exit();
     }
 
-    $conn->begin_transaction();
     try {
-        $validated_items = [];
-        $calculated_total = 0;
-        $product_stmt = $conn->prepare("SELECT price, quantity FROM products WHERE id = ? FOR UPDATE");
-        foreach ($products as $item) {
-            $product_id = (int) ($item['id'] ?? 0);
-            $qty = (int) ($item['quantity'] ?? 0);
-            if ($product_id <= 0 || $qty <= 0) {
-                throw new Exception('item');
-            }
-            $product_stmt->bind_param('i', $product_id);
-            if (!$product_stmt->execute()) {
-                throw new Exception('product');
-            }
-            $product = $product_stmt->get_result()->fetch_assoc();
-            if (!$product || (int) $product['quantity'] < $qty) {
-                throw new Exception('stock');
-            }
-            $price = (float) $product['price'];
-            $calculated_total += $price * $qty;
-            $validated_items[] = ['id' => $product_id, 'qty' => $qty, 'price' => $price];
-        }
-
-        $order_stmt = $conn->prepare("INSERT INTO orders (user_id, total, status) VALUES (?, ?, 'waiting')");
-        $order_stmt->bind_param('id', $user_id, $calculated_total);
-        if (!$order_stmt->execute()) {
-            throw new Exception('order');
-        }
-        $order_id = $conn->insert_id;
-
-        $item_stmt = $conn->prepare("INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)");
-        $stock_stmt = $conn->prepare("UPDATE products SET quantity = quantity - ?, status = CASE WHEN quantity - ? > 0 THEN 'available' ELSE 'not available' END WHERE id = ? AND quantity >= ?");
-        foreach ($validated_items as $item) {
-            $product_id = $item['id'];
-            $qty = $item['qty'];
-            $price = $item['price'];
-            $item_stmt->bind_param('iiid', $order_id, $product_id, $qty, $price);
-            if (!$item_stmt->execute()) {
-                throw new Exception('item');
-            }
-            $stock_stmt->bind_param('iiii', $qty, $qty, $product_id, $qty);
-            if (!$stock_stmt->execute() || $stock_stmt->affected_rows !== 1) {
-                throw new Exception('stock');
-            }
-        }
-        $conn->commit();
-        echo "<script>alert('Order placed successfully! Waiting for approval.'); window.location='customer.php?page=orders';</script>";
-    } catch (Exception $error) {
-        $conn->rollback();
-        echo "<script>alert('Unable to place order. Please check your cart and try again.'); window.location='customer.php?page=bakery';</script>";
+        createOnlineOrder((int) $user_id, $products, $submissionKey);
+        unset($_SESSION['order_submission_key']);
+        header('Location: customer.php?page=orders&placed=1');
+    } catch (InvalidArgumentException $error) {
+        header('Location: customer.php?page=bakery&error=order');
+    } catch (Throwable $error) {
+        error_log('Customer order creation failed: ' . $error->getMessage());
+        header('Location: customer.php?page=bakery&error=order');
     }
     exit();
 }
 
 // Handle Review
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
-    $product_id = (int) ($_POST['product_id'] ?? 0);
-    $order_id = (int) ($_POST['order_id'] ?? 0);
-    $rating = (int) ($_POST['rating'] ?? 0);
-    $comment = trim($_POST['comment'] ?? '');
+    $product_id = filter_var($_POST['product_id'] ?? null, FILTER_VALIDATE_INT);
+    $order_id = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT);
+    $rating = filter_var($_POST['rating'] ?? null, FILTER_VALIDATE_INT);
+    $commentValue = $_POST['comment'] ?? '';
+    $comment = is_string($commentValue) ? trim($commentValue) : '';
+    if ($comment === '' || mb_strlen($comment, 'UTF-8') > 2000) {
+        header('Location: customer.php?page=reviews&error=review');
+        exit();
+    }
     $eligibility_stmt = $conn->prepare("SELECT o.id FROM orders o JOIN order_items oi ON oi.order_id = o.id WHERE o.id = ? AND o.user_id = ? AND o.status = 'completed' AND oi.product_id = ? AND NOT EXISTS (SELECT 1 FROM reviews r WHERE r.order_id = o.id AND r.product_id = oi.product_id AND r.user_id = o.user_id) LIMIT 1");
     $eligibility_stmt->bind_param('iii', $order_id, $user_id, $product_id);
     $eligibility_stmt->execute();
-    if ($rating < 1 || $rating > 5 || !$eligibility_stmt->get_result()->fetch_assoc()) {
+    if (
+        $product_id === false || $product_id <= 0
+        || $order_id === false || $order_id <= 0
+        || $rating === false || $rating < 1 || $rating > 5
+        || !$eligibility_stmt->get_result()->fetch_assoc()
+    ) {
         header('Location: customer.php?page=reviews&error=review');
         exit();
     }
@@ -153,7 +133,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     <title>BakeTrack - Customer</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
-<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>">
+<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>" data-csrf-token="<?= htmlspecialchars(csrfToken(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
     <div class="dashboard-container">
         <!-- Sidebar -->
         <aside class="sidebar" id="dashboard-sidebar">
@@ -177,9 +157,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 <a href="?page=settings" class="<?= $page === 'settings' ? 'active' : '' ?>" <?= $page === 'settings' ? 'aria-current="page"' : '' ?>>
                     <i class="fas fa-cog"></i> Settings
                 </a>
-                <a href="logout.php" class="logout-btn">
-                    <i class="fas fa-sign-out-alt"></i> Logout
-                </a>
+                <form method="POST" action="logout.php" class="logout-form">
+                    <?= csrfField() ?>
+                    <button type="submit" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Logout</button>
+                </form>
             </nav>
         </aside>
 
@@ -216,7 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     <p class="price">₱<?= number_format($product['price'], 2) ?></p>
                     <div class="product-rating">
                         <i class="fas fa-star" style="color: #F39C12;"></i>
-                        <span><?= $avg_rating ?> (<?= $review_count ?> reviews)</span>
+                        <span><?= (int) $review_count === 0 ? '0.0%' : $avg_rating . ' (' . $review_count . ' reviews)' ?></span>
                     </div>
                     <span class="status <?= $product['status'] === 'available' ? 'available' : 'unavailable' ?>">
                         <?= ucfirst($product['status']) ?>
@@ -229,6 +210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 </div>
                 <?php endwhile; ?>
             </div>
+            <p id="searchEmpty" class="empty-state" style="display: none;">Not Available</p>
 
             <!-- Order Modal -->
             <div id="orderModal" class="modal">
@@ -236,6 +218,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     <span class="close" onclick="closeOrderForm()">&times;</span>
                     <h2>Place Order</h2>
                     <form id="orderForm" method="POST">
+                        <?= csrfField() ?>
                         <div id="orderItems">
                             <div class="order-item">
                                 <div class="form-group">
@@ -247,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                                         while ($p = $products->fetch_assoc()):
                                         ?>
                                         <option value="<?= $p['id'] ?>" data-price="<?= $p['price'] ?>">
-                                            <?= $p['name'] ?> (₱<?= number_format($p['price'], 2) ?>)
+                                            <?= htmlspecialchars($p['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (₱<?= number_format($p['price'], 2) ?>)
                                         </option>
                                         <?php endwhile; ?>
                                     </select>
@@ -277,6 +260,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                         <input type="hidden" name="products" id="orderProductsData">
                         <input type="hidden" name="total" id="orderTotalData">
                         <input type="hidden" name="place_order" value="1">
+                        <input type="hidden" name="submission_key" value="<?= htmlspecialchars(getOrderSubmissionKey(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
                         
                         <div class="order-actions">
                             <button type="button" class="btn btn-danger" onclick="closeOrderForm()">Cancel</button>
@@ -294,6 +278,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
             </div>
                 <?php if (isset($_GET['received'])): ?>
                 <div class="alert alert-success" role="status">Order marked as received. Thank you!</div>
+                <?php elseif (isset($_GET['placed'])): ?>
+                <div class="alert alert-success" role="status">Order placed successfully! Waiting for approval.</div>
                 <?php elseif (isset($_GET['error'])): ?>
                 <div class="alert alert-error" role="alert">Unable to update that order.</div>
                 <?php endif; ?>
@@ -307,11 +293,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 <?php 
                     $statuses = ['waiting', 'preparing', 'ready', 'completed'];
                 foreach ($statuses as $status):
-                $orders = $conn->query("SELECT * FROM orders WHERE user_id = $user_id AND status = '$status' ORDER BY order_date DESC");
+                $orders = $conn->query("SELECT * FROM orders WHERE user_id = $user_id AND status = '$status' ORDER BY order_date DESC, id DESC LIMIT 101 OFFSET $orderOffset");
+                $orderHasMore = $orders->num_rows > 100;
                 ?>
                 <div class="order-list" id="tab-<?= $status ?>" style="<?= $status === 'waiting' ? 'display:block' : 'display:none' ?>">
                     <?php if ($orders->num_rows > 0): ?>
-                        <?php while ($order = $orders->fetch_assoc()): ?>
+                        <?php $orderShown = 0; while ($orderShown < 100 && ($order = $orders->fetch_assoc())): $orderShown++; ?>
                         <div class="order-card">
                             <div class="order-header">
                                 <span class="order-id">#<?= $order['id'] ?></span>
@@ -323,15 +310,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                                     <i class="fas fa-receipt"></i> View Receipt
                                 </a>
                                 <?php if ($status === 'ready'): ?>
-                                <button class="btn btn-success" onclick="markAsReceived(<?= $order['id'] ?>)">
-                                    <i class="fas fa-hand"></i> Grab Order
-                                </button>
+                                <form method="POST" class="inline-form">
+                                    <?= csrfField() ?>
+                                    <input type="hidden" name="order_id" value="<?= (int) $order['id'] ?>">
+                                    <button type="submit" name="received_order" value="1" class="btn btn-success">
+                                        <i class="fas fa-hand"></i> Grab Order
+                                    </button>
+                                </form>
                                 <?php endif; ?>
                             </div>
                         </div>
                         <?php endwhile; ?>
                     <?php else: ?>
                         <p class="empty-state">📭 No orders in <?= $status ?></p>
+                    <?php endif; ?>
+                    <?php if ($orderPage > 1 || $orderHasMore): ?>
+                    <nav class="pagination-controls" aria-label="<?= htmlspecialchars(ucfirst($status), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> order pages">
+                        <?php if ($orderPage > 1): ?>
+                        <a href="?page=orders&orders_page=<?= $orderPage - 1 ?>">Previous</a>
+                        <?php endif; ?>
+                        <?php if ($orderHasMore): ?>
+                        <a href="?page=orders&orders_page=<?= $orderPage + 1 ?>">Next</a>
+                        <?php endif; ?>
+                    </nav>
                     <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
@@ -392,14 +393,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 <div class="message-compose">
                     <h3>Send Message</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <select name="receiver_id" required>
                                 <option value="">Select Recipient</option>
                                 <?php 
-                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id");
+                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id AND is_active = 1");
                                 while ($u = $users->fetch_assoc()):
                                 ?>
-                                <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['fullname']) ?> (<?= $u['role'] ?>)</option>
+                                <option value="<?= (int) $u['id'] ?>"><?= htmlspecialchars($u['fullname'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (<?= htmlspecialchars($u['role'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>)</option>
                                 <?php endwhile; ?>
                             </select>
                         </div>
@@ -487,6 +489,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     <span class="close" onclick="closeReviewForm()">&times;</span>
                     <h2>Write a Review</h2>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <input type="hidden" name="order_id" id="reviewOrderId">
                         <input type="hidden" name="product_id" id="reviewProductId">
                         
@@ -554,6 +557,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                 <div class="settings-card">
                     <h3>Profile Information</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <label>Full Name</label>
                             <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>" required>
@@ -564,7 +568,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                         </div>
                         <div class="form-group">
                             <label>Email</label>
-                            <input type="email" value="<?= $user['email'] ?>" disabled>
+                            <input type="email" value="<?= htmlspecialchars($user['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>" disabled>
                             <small>Email cannot be changed</small>
                         </div>
                         
@@ -601,10 +605,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     function filterProducts() {
         const input = document.getElementById('searchProduct').value.toLowerCase();
         const cards = document.querySelectorAll('.product-card');
+        let visible = 0;
         cards.forEach(card => {
             const name = card.getAttribute('data-name') || '';
-            card.style.display = name.includes(input) ? '' : 'none';
+            const matches = name.includes(input);
+            card.style.display = matches ? '' : 'none';
+            if (matches) visible++;
         });
+        const emptyMessage = document.getElementById('searchEmpty');
+        if (emptyMessage) emptyMessage.style.display = visible === 0 ? 'block' : 'none';
     }
     
     // Order functions
@@ -658,7 +667,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     while ($p = $products->fetch_assoc()):
                     ?>
                     <option value="<?= $p['id'] ?>" data-price="<?= $p['price'] ?>">
-                        <?= $p['name'] ?> (₱<?= number_format($p['price'], 2) ?>)
+                        <?= htmlspecialchars($p['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (₱<?= number_format($p['price'], 2) ?>)
                     </option>
                     <?php endwhile; ?>
                 </select>
@@ -748,7 +757,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     
     function markAsReceived(orderId) {
         if (confirm('Have you received your order? This will mark it as completed.')) {
-            window.location.href = `?page=orders&action=received&order_id=${orderId}`;
+            const form = document.createElement('form');
+            form.method = 'POST';
+            const fields = {
+                csrf_token: document.body.dataset.csrfToken,
+                received_order: '1',
+                order_id: orderId
+            };
+            Object.entries(fields).forEach(([name, value]) => {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = name;
+                input.value = value;
+                form.appendChild(input);
+            });
+            document.body.appendChild(form);
+            form.submit();
         }
     }
     

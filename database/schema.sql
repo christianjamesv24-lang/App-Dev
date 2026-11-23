@@ -27,6 +27,7 @@ CREATE TABLE `messages` (
 CREATE TABLE `orders` (
   `id` int NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
+  `idempotency_key` char(64) DEFAULT NULL,
   `customer_name` varchar(255) DEFAULT NULL,
   `total` decimal(10,2) NOT NULL DEFAULT '0.00',
   `payment` decimal(10,2) DEFAULT NULL,
@@ -35,7 +36,10 @@ CREATE TABLE `orders` (
   `status` varchar(30) NOT NULL DEFAULT 'waiting',
   `order_date` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  KEY `user_id` (`user_id`)
+  UNIQUE KEY `idempotency_key` (`idempotency_key`),
+  KEY `user_id` (`user_id`),
+  KEY `status_order_date` (`status`,`order_date`,`id`),
+  KEY `user_status_order_date` (`user_id`,`status`,`order_date`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `order_items` (
@@ -101,7 +105,8 @@ CREATE TABLE `transactions` (
   `transaction_date` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
-  KEY `order_id` (`order_id`)
+  KEY `order_id` (`order_id`),
+  KEY `transaction_date_id` (`transaction_date`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `password_reset_tokens` (
@@ -129,6 +134,7 @@ CREATE TABLE `users` (
   `email` varchar(255) NOT NULL,
   `fullname` varchar(255) NOT NULL,
   `role` varchar(30) NOT NULL DEFAULT 'customer',
+  `is_active` tinyint(1) NOT NULL DEFAULT '1',
   `birthdate` date DEFAULT NULL,
   `darkmode` tinyint(1) NOT NULL DEFAULT '0',
   `anonymous` tinyint(1) NOT NULL DEFAULT '0',

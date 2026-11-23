@@ -1,5 +1,6 @@
 <?php
 require_once 'includes/functions.php';
+requireValidCsrfToken();
 
 requireAdmin();
 
@@ -11,6 +12,11 @@ if (!is_string($requested_page) || !in_array($requested_page, $allowed_pages, tr
     exit();
 }
 $page = $requested_page;
+$orderPages = [];
+foreach (['waiting', 'preparing', 'ready'] as $orderStatus) {
+    $orderPage = filter_var($_GET[$orderStatus . '_page'] ?? 1, FILTER_VALIDATE_INT);
+    $orderPages[$orderStatus] = $orderPage && $orderPage > 0 ? $orderPage : 1;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_site_content'])) {
     try {
@@ -33,43 +39,62 @@ if ($page === 'messages') {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['user_action'])) {
     $target_id = filter_var($_POST['user_id'] ?? null, FILTER_VALIDATE_INT);
-    $action = $_POST['user_action'];
+    $action = is_string($_POST['user_action']) ? $_POST['user_action'] : '';
     $updated = false;
 
-    if ($target_id && $action === 'update_user') {
+    if ($action === 'create_assistant') {
+        $username = trim($_POST['username'] ?? '');
+        $fullname = trim($_POST['fullname'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+        $password = $_POST['password'] ?? '';
+        if (
+            preg_match('/\A[a-zA-Z0-9._-]{3,100}\z/', $username)
+            && $fullname !== ''
+            && filter_var($email, FILTER_VALIDATE_EMAIL)
+            && isValidPassword($password)
+            && !userExists($username, $email)
+        ) {
+            $password_hash = password_hash($password, PASSWORD_BCRYPT);
+            $assistant_stmt = $conn->prepare(
+                "INSERT INTO users (username, password, email, fullname, role, is_active)
+                 VALUES (?, ?, ?, ?, 'assistant', 1)"
+            );
+            $assistant_stmt->bind_param('ssss', $username, $password_hash, $email, $fullname);
+            $updated = $assistant_stmt->execute();
+        }
+    } elseif ($target_id > 0 && $action === 'update_user') {
         $fullname = trim($_POST['fullname'] ?? '');
         $email = trim($_POST['email'] ?? '');
         $role = $_POST['role'] ?? '';
         if ($fullname !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)
             && in_array($role, ['admin', 'assistant', 'customer'], true)
             && ($target_id !== (int) $user_id || $role === 'admin')) {
-            $email_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $email_stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND id != ? AND is_active = 1");
             $email_stmt->bind_param('si', $email, $target_id);
             $email_stmt->execute();
             if ($email_stmt->get_result()->num_rows === 0) {
-                $user_stmt = $conn->prepare("UPDATE users SET fullname = ?, email = ?, role = ? WHERE id = ?");
+                $user_stmt = $conn->prepare("UPDATE users SET fullname = ?, email = ?, role = ? WHERE id = ? AND is_active = 1");
                 $user_stmt->bind_param('sssi', $fullname, $email, $role, $target_id);
                 $updated = $user_stmt->execute();
             }
         }
-    } elseif ($target_id && $action === 'change_password') {
+    } elseif ($target_id > 0 && $action === 'change_password') {
         $password = $_POST['password'] ?? '';
-        if (strlen($password) >= 6) {
-            $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-            $password_stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ?");
+        if (isValidPassword($password)) {
+            $hashed_password = password_hash($password, PASSWORD_BCRYPT);
+            $password_stmt = $conn->prepare("UPDATE users SET password = ? WHERE id = ? AND is_active = 1");
             $password_stmt->bind_param('si', $hashed_password, $target_id);
             $updated = $password_stmt->execute();
         }
-    } elseif ($target_id && $action === 'delete') {
-        $delete_stmt = $conn->prepare("DELETE FROM users WHERE id = ? AND role != 'admin'");
-        $delete_stmt->bind_param('i', $target_id);
-        $updated = $delete_stmt->execute() && $delete_stmt->affected_rows === 1;
+    } elseif ($target_id > 0 && $action === 'delete') {
+        $updated = anonymizeUserAccount((int) $target_id, (int) $user_id);
     }
 
     if (!$updated) {
         error_log('Admin user action failed: ' . $conn->error);
     }
-    header('Location: admin.php?page=database&' . ($updated ? 'updated=1' : 'error=user'));
+    $resultFlag = $updated ? ($action === 'create_assistant' ? 'created=1' : 'updated=1') : 'error=user';
+    header('Location: admin.php?page=database&' . $resultFlag);
     exit();
 }
 
@@ -83,7 +108,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $price = filter_var($_POST['price'] ?? null, FILTER_VALIDATE_FLOAT);
         $quantity = filter_var($_POST['quantity'] ?? null, FILTER_VALIDATE_INT);
         $description = trim($_POST['description'] ?? '');
-        if (!$id || $id < 0 || $name === '' || $price === false || $price < 0 || $quantity === false || $quantity < 0) {
+        if ($id === false || $id < 0 || ($product_id !== '' && $id === 0)
+            || $name === '' || $price === false || $price < 0 || $quantity === false || $quantity < 0) {
             header('Location: admin.php?page=uploads&error=product');
             exit();
         }
@@ -169,14 +195,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // Handle Order Updates
-if (isset($_GET['action']) && isset($_GET['order_id'])) {
-    $order_id = filter_var($_GET['order_id'], FILTER_VALIDATE_INT);
-    $status = $_GET['action'];
-    $reason = isset($_GET['reason']) && is_string($_GET['reason']) ? trim($_GET['reason']) : '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_order'])) {
+    $order_id = filter_var($_POST['order_id'] ?? null, FILTER_VALIDATE_INT);
+    $status = isset($_POST['status']) && is_string($_POST['status']) ? $_POST['status'] : '';
+    $reason = isset($_POST['reason']) && is_string($_POST['reason']) ? trim($_POST['reason']) : '';
     
     if ($order_id && in_array($status, ['waiting', 'preparing', 'ready', 'completed'], true)) {
         try {
-            transitionOrder($order_id, $status, $reason);
+            transitionOrder($order_id, $status, $reason, getCurrentUserRole(), (int) $user_id);
             header('Location: admin.php?page=orders&updated=1');
         } catch (Throwable $error) {
             error_log('Admin order update failed: ' . $error->getMessage());
@@ -204,7 +230,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['send_message'])) {
 // Dashboard stats
 $stats = [
     'products' => $conn->query("SELECT COUNT(*) as count FROM products")->fetch_assoc()['count'],
-    'users' => $conn->query("SELECT COUNT(*) as count FROM users WHERE role='customer'")->fetch_assoc()['count'],
+    'users' => $conn->query("SELECT COUNT(*) as count FROM users WHERE role='customer' AND is_active = 1")->fetch_assoc()['count'],
     'reviews' => $conn->query("SELECT AVG(rating) as avg FROM reviews")->fetch_assoc()['avg'] ?? 0
 ];
 
@@ -226,7 +252,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>" data-live-orders="<?= $page === 'orders' ? 'true' : 'false' ?>">
+<body class="<?= !empty($user['darkmode']) ? 'dark-mode' : '' ?>" data-live-orders="<?= $page === 'orders' ? 'true' : 'false' ?>" data-csrf-token="<?= htmlspecialchars(csrfToken(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
     <div class="dashboard-container">
         <!-- Sidebar -->
         <aside class="sidebar" id="dashboard-sidebar">
@@ -265,9 +291,10 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 <a href="?page=content" class="<?= $page === 'content' ? 'active' : '' ?>" <?= $page === 'content' ? 'aria-current="page"' : '' ?>>
                     <i class="fas fa-edit"></i> Site Content
                 </a>
-                <a href="logout.php" class="logout-btn">
-                    <i class="fas fa-sign-out-alt"></i> Logout
-                </a>
+                <form method="POST" action="logout.php" class="logout-form">
+                    <?= csrfField() ?>
+                    <button type="submit" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Logout</button>
+                </form>
             </nav>
         </aside>
 
@@ -344,6 +371,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 </div>
                 <?php endwhile; ?>
             </div>
+            <p id="searchEmpty" class="empty-state" style="display: none;">Not Available</p>
             <?php endif; ?>
 
             <!-- ==================== UPLOADS ==================== -->
@@ -398,6 +426,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     <span class="close" onclick="closeProductModal()">&times;</span>
                     <h2 id="modalTitle">Add Product</h2>
                     <form method="POST" enctype="multipart/form-data">
+                        <?= csrfField() ?>
                         <input type="hidden" name="product_id" id="productId">
                         <div class="form-group">
                             <label>Product Name</label>
@@ -444,14 +473,18 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 <?php 
                 $statuses = ['waiting', 'preparing', 'ready'];
                 foreach ($statuses as $status):
+                $orderPage = $orderPages[$status];
+                $orderOffset = ($orderPage - 1) * 100;
                 $orders = $conn->query("SELECT o.*, u.fullname as customer FROM orders o 
                     JOIN users u ON o.user_id = u.id 
                     WHERE o.status = '$status' 
-                    ORDER BY o.order_date DESC");
+                    ORDER BY o.order_date DESC, o.id DESC
+                    LIMIT 101 OFFSET $orderOffset");
+                $orderHasMore = $orders->num_rows > 100;
                 ?>
                 <div class="order-list" id="tab-<?= $status ?>" style="<?= $status === 'waiting' ? 'display:block' : 'display:none' ?>">
                     <?php if ($orders->num_rows > 0): ?>
-                        <?php while ($order = $orders->fetch_assoc()): ?>
+                        <?php $orderShown = 0; while ($orderShown < 100 && ($order = $orders->fetch_assoc())): $orderShown++; ?>
                         <div class="order-card">
                             <div class="order-header">
                                 <span class="order-id">#<?= $order['id'] ?></span>
@@ -478,6 +511,9 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                                     </button>
                                     <?php endif; ?>
                                     <?php if ($status === 'ready'): ?>
+                                    <button class="btn btn-success" onclick="updateOrder(<?= $order['id'] ?>, 'completed')">
+                                        <i class="fas fa-check"></i> Mark Completed
+                                    </button>
                                     <button class="btn btn-primary" onclick="viewAdminReceipt(<?= $order['id'] ?>)">
                                         <i class="fas fa-receipt"></i> View Receipt
                                     </button>
@@ -488,6 +524,16 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                         <?php endwhile; ?>
                     <?php else: ?>
                         <p class="empty-state">No orders in <?= $status ?></p>
+                    <?php endif; ?>
+                    <?php if ($orderPage > 1 || $orderHasMore): ?>
+                    <nav class="pagination-controls" aria-label="<?= htmlspecialchars(ucfirst($status), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> order pages">
+                        <?php if ($orderPage > 1): ?>
+                        <a href="?page=orders&<?= $status ?>_page=<?= $orderPage - 1 ?>">Previous</a>
+                        <?php endif; ?>
+                        <?php if ($orderHasMore): ?>
+                        <a href="?page=orders&<?= $status ?>_page=<?= $orderPage + 1 ?>">Next</a>
+                        <?php endif; ?>
+                    </nav>
                     <?php endif; ?>
                 </div>
                 <?php endforeach; ?>
@@ -521,11 +567,14 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             </div>
             <div class="transactions-list">
                 <?php 
-                $transactions = $conn->query("SELECT t.*, u.fullname as user FROM transactions t 
-                    JOIN users u ON t.user_id = u.id 
-                    ORDER BY t.transaction_date DESC");
+                $transactionPage = filter_var($_GET['transactions_page'] ?? 1, FILTER_VALIDATE_INT);
+                $transactionPage = $transactionPage && $transactionPage > 0 ? $transactionPage : 1;
+                $transactions = getAllTransactions($transactionPage);
+                $transactionsHaveMore = $transactions->num_rows > 100;
+                $transactionsShown = 0;
                 if ($transactions->num_rows > 0):
-                while ($trans = $transactions->fetch_assoc()): 
+                while ($transactionsShown < 100 && ($trans = $transactions->fetch_assoc())):
+                $transactionsShown++;
                 ?>
                 <div class="transaction-item">
                     <div class="trans-info">
@@ -544,6 +593,16 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 <?php endwhile; ?>
                 <?php else: ?>
                 <p class="empty-state">📭 No transactions yet</p>
+                <?php endif; ?>
+                <?php if ($transactionPage > 1 || $transactionsHaveMore): ?>
+                <nav class="pagination-controls" aria-label="Transaction pages">
+                    <?php if ($transactionPage > 1): ?>
+                    <a href="?page=transactions&transactions_page=<?= $transactionPage - 1 ?>">Previous</a>
+                    <?php endif; ?>
+                    <?php if ($transactionsHaveMore): ?>
+                    <a href="?page=transactions&transactions_page=<?= $transactionPage + 1 ?>">Next</a>
+                    <?php endif; ?>
+                </nav>
                 <?php endif; ?>
             </div>
             <?php endif; ?>
@@ -585,14 +644,15 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 <div class="message-compose">
                     <h3>Send Message</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <select name="receiver_id" required>
                                 <option value="">Select Recipient</option>
                                 <?php 
-                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id");
+                                $users = $conn->query("SELECT id, fullname, role FROM users WHERE id != $user_id AND is_active = 1");
                                 while ($u = $users->fetch_assoc()):
                                 ?>
-                                <option value="<?= $u['id'] ?>"><?= htmlspecialchars($u['fullname']) ?> (<?= $u['role'] ?>)</option>
+                                <option value="<?= (int) $u['id'] ?>"><?= htmlspecialchars($u['fullname'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?> (<?= htmlspecialchars($u['role'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>)</option>
                                 <?php endwhile; ?>
                             </select>
                         </div>
@@ -642,8 +702,8 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                         $earnings = $product['price'] * $product['quantity'];
                         $total_earnings += $earnings;
                         ?>
-                        <tr data-name="<?= strtolower($product['name']) ?>">
-                            <td><?= $product['name'] ?></td>
+                        <tr data-name="<?= htmlspecialchars(mb_strtolower($product['name']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
+                            <td><?= htmlspecialchars($product['name'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
                             <td>₱<?= number_format($product['price'], 2) ?></td>
                             <td><?= $product['quantity'] ?></td>
                             <td><?= date('M d, Y', strtotime($product['date_added'])) ?></td>
@@ -711,21 +771,48 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <div class="page-header">
                 <h1>User Database</h1>
                 <div class="search-box">
-                    <select id="searchBy" onchange="updateSearchPlaceholder()">
+                    <select id="searchBy" onchange="updateSearchPlaceholder()" aria-label="Search field">
                         <option value="username">Username</option>
                         <option value="fullname">Full Name</option>
                         <option value="email">Email</option>
                         <option value="role">Role</option>
                     </select>
-                    <input type="text" id="searchDatabase" placeholder="Search by username..." oninput="filterDatabase()">
-                    <button type="button" onclick="filterDatabase()"><i class="fas fa-search"></i></button>
+                    <input type="text" id="searchDatabase" placeholder="Search by username..." aria-label="Search users" oninput="filterDatabase()">
+                    <button type="button" aria-label="Search users" onclick="filterDatabase()"><i class="fas fa-search"></i></button>
                 </div>
             </div>
             <?php if (isset($_GET['updated'])): ?>
             <div class="alert alert-success" role="status">User updated successfully.</div>
+            <?php elseif (isset($_GET['created'])): ?>
+            <div class="alert alert-success" role="status">Assistant account created successfully.</div>
             <?php elseif (isset($_GET['error'])): ?>
             <div class="alert alert-error" role="alert">Unable to update that user.</div>
             <?php endif; ?>
+
+            <div class="settings-card assistant-account-form">
+                <h3>Add Assistant</h3>
+                <form method="POST">
+                    <?= csrfField() ?>
+                    <input type="hidden" name="user_action" value="create_assistant">
+                    <div class="form-group">
+                        <label for="assistantUsername">Username</label>
+                        <input type="text" id="assistantUsername" name="username" minlength="3" maxlength="100" pattern="[A-Za-z0-9._-]{3,100}" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="assistantFullname">Full name</label>
+                        <input type="text" id="assistantFullname" name="fullname" maxlength="255" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="assistantEmail">Email</label>
+                        <input type="email" id="assistantEmail" name="email" maxlength="255" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="assistantPassword">Temporary password</label>
+                        <input type="password" id="assistantPassword" name="password" minlength="<?= MIN_PASSWORD_LENGTH ?>" autocomplete="new-password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Add Assistant</button>
+                </form>
+            </div>
             
             <div class="database-table-container">
                 <table class="database-table">
@@ -742,18 +829,18 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     </thead>
                     <tbody id="databaseBody">
                         <?php 
-                        $users = $conn->query("SELECT * FROM users ORDER BY created_at DESC");
+                        $users = $conn->query("SELECT * FROM users WHERE is_active = 1 ORDER BY created_at DESC");
                         while ($u = $users->fetch_assoc()):
                         ?>
-                        <tr data-username="<?= strtolower($u['username']) ?>" 
-                            data-fullname="<?= strtolower($u['fullname']) ?>" 
-                            data-email="<?= strtolower($u['email']) ?>"
-                            data-role="<?= strtolower($u['role']) ?>">
+                        <tr data-username="<?= htmlspecialchars(mb_strtolower($u['username']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+                            data-fullname="<?= htmlspecialchars(mb_strtolower($u['fullname']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+                            data-email="<?= htmlspecialchars(mb_strtolower($u['email']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"
+                            data-role="<?= htmlspecialchars(mb_strtolower($u['role']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>">
                             <td><?= $u['id'] ?></td>
-                            <td><?= $u['username'] ?></td>
-                            <td><?= htmlspecialchars($u['fullname']) ?></td>
-                            <td><?= $u['email'] ?></td>
-                            <td><span class="role-badge <?= $u['role'] ?>"><?= ucfirst($u['role']) ?></span></td>
+                            <td><?= htmlspecialchars($u['username'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars($u['fullname'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars($u['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></td>
+                            <td><span class="role-badge <?= htmlspecialchars($u['role'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>"><?= htmlspecialchars(ucfirst($u['role']), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?></span></td>
                             <td><?= date('M d, Y', strtotime($u['created_at'])) ?></td>
                             <td>
                                 <button class="btn-small btn-edit" onclick='editUser(<?= (int) $u['id'] ?>, <?= htmlspecialchars(json_encode($u['username'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['fullname'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['email'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>, <?= htmlspecialchars(json_encode($u['role'], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP), ENT_QUOTES, 'UTF-8') ?>)'>
@@ -777,15 +864,15 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <script>
             function updateSearchPlaceholder() {
                 const searchBy = document.getElementById('searchBy').value;
-                const placeholder = {
+                const placeholders = {
                     'username': 'Search by username...',
                     'fullname': 'Search by full name...',
                     'email': 'Search by email...',
                     'role': 'Search by role (admin/assistant/customer)...'
                 };
-                document.getElementById('searchDatabase').placeholder = placeholder[searchBy] || 'Search...';
+                document.getElementById('searchDatabase').placeholder = placeholders[searchBy] || 'Search...';
             }
-            
+
             function filterDatabase() {
                 const input = document.getElementById('searchDatabase').value.toLowerCase();
                 const searchBy = document.getElementById('searchBy').value;
@@ -795,7 +882,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     row.style.display = value.includes(input) ? '' : 'none';
                 });
             }
-            
+
             function editUser(id, username, fullname, email, role) {
                 const newFullname = prompt('Edit Full Name:', fullname);
                 if (newFullname === null || newFullname.trim() === '') return;
@@ -807,27 +894,15 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             }
 
             function submitUserUpdate(id, fullname, email, role) {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = 'admin.php?page=database';
-                const fields = {user_id: id, user_action: 'update_user', fullname, email, role};
-                Object.entries(fields).forEach(([name, value]) => {
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = name;
-                    input.value = value;
-                    form.appendChild(input);
-                });
-                document.body.appendChild(form);
-                form.submit();
+                submitAdminPost({user_id: id, user_action: 'update_user', fullname, email, role}, 'admin.php?page=database');
             }
             
             function changePassword(id) {
-                const newPass = prompt('Enter new password (min 6 characters):');
-                if (newPass && newPass.length >= 6) {
+                const newPass = prompt('Enter new password (min <?= MIN_PASSWORD_LENGTH ?> characters):');
+                if (newPass && newPass.length >= <?= MIN_PASSWORD_LENGTH ?>) {
                     submitUserAction(id, 'change_password', 'password', newPass);
                 } else if (newPass) {
-                    alert('Password must be at least 6 characters!');
+                    alert('Password must be at least <?= MIN_PASSWORD_LENGTH ?> characters!');
                 }
             }
             
@@ -838,20 +913,9 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             }
 
             function submitUserAction(id, action, fieldName, value) {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = 'admin.php?page=database';
                 const fields = {user_id: id, user_action: action};
                 if (fieldName) fields[fieldName] = value;
-                Object.entries(fields).forEach(([name, fieldValue]) => {
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = name;
-                    input.value = fieldValue;
-                    form.appendChild(input);
-                });
-                document.body.appendChild(form);
-                form.submit();
+                submitAdminPost(fields, 'admin.php?page=database');
             }
             </script>
             <?php endif; ?>
@@ -900,6 +964,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
             <div class="settings-container site-content-container">
                 <div class="settings-card site-content-card">
                     <form method="POST">
+                        <?= csrfField() ?>
                         <?php foreach ($contentFields as $group => $fields): ?>
                             <fieldset class="site-content-group">
                                 <legend><?= htmlspecialchars($group, ENT_QUOTES, 'UTF-8') ?></legend>
@@ -960,6 +1025,7 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                 <div class="settings-card">
                     <h3>Profile Information</h3>
                     <form method="POST">
+                        <?= csrfField() ?>
                         <div class="form-group">
                             <label>Full Name</label>
                             <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>" required>
@@ -970,12 +1036,12 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                         </div>
                         <div class="form-group">
                             <label>Email</label>
-                            <input type="email" value="<?= $user['email'] ?>" disabled>
+                            <input type="email" value="<?= htmlspecialchars($user['email'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>" disabled>
                             <small>Email cannot be changed</small>
                         </div>
                         <div class="form-group">
                             <label>Username</label>
-                            <input type="text" value="<?= $user['username'] ?>" disabled>
+                            <input type="text" value="<?= htmlspecialchars($user['username'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') ?>" disabled>
                             <small>Username cannot be changed</small>
                         </div>
                         
@@ -1007,6 +1073,22 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
 
     <script>
     // ==================== JAVASCRIPT FUNCTIONS ====================
+
+    function submitAdminPost(fields, action = 'admin.php') {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = action;
+        const values = {...fields, csrf_token: document.body.dataset.csrfToken};
+        Object.entries(values).forEach(([name, value]) => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = name;
+            input.value = value;
+            form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+    }
     
     // Product functions
     function openProductModal() {
@@ -1035,27 +1117,21 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
     
     function deleteProduct(id) {
         if (confirm('Are you sure you want to delete this product?')) {
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.innerHTML = `<input type="hidden" name="product_id" value="${id}">
-                             <input type="hidden" name="delete_product" value="1">`;
-            document.body.appendChild(form);
-            form.submit();
+            submitAdminPost({product_id: id, delete_product: '1'}, 'admin.php?page=uploads');
         }
     }
     
     // Order functions
     function updateOrder(orderId, status) {
         if (confirm(`Update order #${orderId} to ${status}?`)) {
-            window.location.href = `?page=orders&action=${status}&order_id=${orderId}`;
+            submitAdminPost({update_order: '1', order_id: orderId, status}, 'admin.php?page=orders');
         }
     }
     
     function unprepareOrder(orderId) {
         const reason = prompt('Why are you unpreparing this order? (Optional)');
         if (reason !== null) {
-            // Update with reason in notes
-            window.location.href = `?page=orders&action=waiting&order_id=${orderId}&reason=${encodeURIComponent(reason)}`;
+            submitAdminPost({update_order: '1', order_id: orderId, status: 'waiting', reason}, 'admin.php?page=orders');
         }
     }
     
@@ -1075,10 +1151,15 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
     function filterProducts() {
         const input = document.getElementById('searchProduct').value.toLowerCase();
         const cards = document.querySelectorAll('.product-card');
+        let visible = 0;
         cards.forEach(card => {
             const name = card.getAttribute('data-name') || '';
-            card.style.display = name.includes(input) ? '' : 'none';
+            const matches = name.includes(input);
+            card.style.display = matches ? '' : 'none';
+            if (matches) visible++;
         });
+        const emptyMessage = document.getElementById('searchEmpty');
+        if (emptyMessage) emptyMessage.style.display = visible === 0 ? 'block' : 'none';
     }
     
     // Close modal on outside click

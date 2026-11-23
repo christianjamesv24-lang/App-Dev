@@ -62,7 +62,7 @@ if ($userCheck->get_result()->num_rows > 0) {
     exit(1);
 }
 
-$passwordHash = password_hash($password, PASSWORD_DEFAULT);
+$passwordHash = password_hash($password, PASSWORD_BCRYPT);
 $insert = $conn->prepare("INSERT INTO users (username, password, email, fullname, role) VALUES (?, ?, ?, ?, 'admin')");
 $insert->bind_param('ssss', $username, $passwordHash, $email, $fullname);
 if (!$insert->execute()) {

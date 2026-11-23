@@ -223,7 +223,26 @@ function postData(url, data, callback) {
 // Order Functions
 function updateOrderStatus(orderId, status) {
     if (confirm(`Are you sure you want to update order #${orderId} to ${status}?`)) {
-        window.location.href = `?action=update_order&order_id=${orderId}&status=${status}`;
+        const token = document.body.getAttribute('data-csrf-token');
+        if (!token) {
+            throw new Error('Missing request security token.');
+        }
+        const form = document.createElement('form');
+        form.method = 'POST';
+        [
+            ['csrf_token', token],
+            ['update_order', '1'],
+            ['order_id', orderId],
+            ['status', status]
+        ].forEach(([name, value]) => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = name;
+            input.value = value;
+            form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
     }
 }
 
