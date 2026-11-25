@@ -233,6 +233,10 @@ $stats = [
     'users' => $conn->query("SELECT COUNT(*) as count FROM users WHERE role='customer' AND is_active = 1")->fetch_assoc()['count'],
     'reviews' => $conn->query("SELECT AVG(rating) as avg FROM reviews")->fetch_assoc()['avg'] ?? 0
 ];
+$orderCounts = $conn->query("SELECT SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed, COUNT(*) as total FROM orders")->fetch_assoc();
+$stats['efficiency'] = (int) $orderCounts['total'] > 0
+    ? round(((int) $orderCounts['completed'] / (int) $orderCounts['total']) * 100)
+    : 0;
 
 // Get inventory data for chart
 $monthly_data = [];
@@ -328,6 +332,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     <i class="fas fa-star"></i>
                     <h3><?= number_format($stats['reviews'], 1) ?>★</h3>
                     <p>Reviews</p>
+                </div>
+                <div class="stat-card" style="border-left: 4px solid #4CAF50;">
+                    <i class="fas fa-chart-line"></i>
+                    <h3><?= $stats['efficiency'] ?>%</h3>
+                    <p>System Efficiency</p>
                 </div>
             </div>
 
@@ -996,6 +1005,12 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                     exit();
                 }
 
+                $birthdateError = birthdateValidationMessage($birthdate);
+                if ($birthdateError !== '') {
+                    echo "<script>alert('$birthdateError'); window.location='admin.php?page=settings';</script>";
+                    exit();
+                }
+
                 if ($birthdate === '') {
                     $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
                     $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
@@ -1028,11 +1043,11 @@ $siteContent = $page === 'content' ? getSiteContent(true) : [];
                         <?= csrfField() ?>
                         <div class="form-group">
                             <label>Full Name</label>
-                            <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>" required>
+                            <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>">
                         </div>
                         <div class="form-group">
                             <label>Birthdate</label>
-                            <input type="date" name="birthdate" value="<?= htmlspecialchars($user['birthdate'] ?? '') ?>">
+                            <input type="date" name="birthdate" value="<?= htmlspecialchars($user['birthdate'] ?? '') ?>" max="<?= date('Y-m-d') ?>">
                         </div>
                         <div class="form-group">
                             <label>Email</label>

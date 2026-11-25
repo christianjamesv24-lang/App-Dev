@@ -337,6 +337,10 @@ function updateProductQuantity($id, $quantity) {
  */
 function addProduct($name, $price, $quantity, $description = '', $image = 'default.svg') {
     global $conn;
+    $name = is_string($name) ? trim($name) : '';
+    if ($name === '') {
+        return false;
+    }
     $status = $quantity > 0 ? 'available' : 'not available';
     $stmt = $conn->prepare("INSERT INTO products (name, price, quantity, description, image, status) VALUES (?, ?, ?, ?, ?, ?)");
     $stmt->bind_param("sdisss", $name, $price, $quantity, $description, $image, $status);
@@ -2010,5 +2014,26 @@ function isValidPhone($phone) {
 function isValidDate($date, $format = 'Y-m-d') {
     $d = DateTime::createFromFormat($format, $date);
     return $d && $d->format($format) === $date;
+}
+
+/**
+ * Validate a submitted birthdate: strict YYYY-MM-DD, a real calendar date,
+ * and not in the future. Returns an error message or an empty string when valid.
+ */
+function birthdateValidationMessage($birthdate) {
+    if ($birthdate === '') {
+        return '';
+    }
+    if (!is_string($birthdate) || !isValidDate($birthdate)) {
+        return 'Invalid birthdate.';
+    }
+    [$year, $month, $day] = array_map('intval', explode('-', $birthdate));
+    if (!checkdate($month, $day, $year)) {
+        return 'Invalid birthdate.';
+    }
+    if ($birthdate > date('Y-m-d')) {
+        return 'Birthdate cannot be in the future.';
+    }
+    return '';
 }
 ?>
