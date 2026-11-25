@@ -530,6 +530,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                     exit();
                 }
 
+                $birthdateError = birthdateValidationMessage($birthdate);
+                if ($birthdateError !== '') {
+                    echo "<script>alert('$birthdateError'); window.location='customer.php?page=settings';</script>";
+                    exit();
+                }
+
                 if ($birthdate === '') {
                     $update_stmt = $conn->prepare("UPDATE users SET fullname = ?, birthdate = NULL, darkmode = ?, anonymous = ? WHERE id = ?");
                     $update_stmt->bind_param('siii', $fullname, $darkmode, $anonymous, $user_id);
@@ -560,11 +566,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
                         <?= csrfField() ?>
                         <div class="form-group">
                             <label>Full Name</label>
-                            <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>" required>
+                            <input type="text" name="fullname" value="<?= htmlspecialchars($user['fullname']) ?>">
                         </div>
                         <div class="form-group">
                             <label>Birthdate</label>
-                            <input type="date" name="birthdate" value="<?= htmlspecialchars($user['birthdate'] ?? '') ?>">
+                            <input type="date" name="birthdate" value="<?= htmlspecialchars($user['birthdate'] ?? '') ?>" max="<?= date('Y-m-d') ?>">
                         </div>
                         <div class="form-group">
                             <label>Email</label>

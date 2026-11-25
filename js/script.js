@@ -32,7 +32,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    if (document.body.dataset.defaultTheme !== 'true' && localStorage.getItem('darkMode') === 'true') {
+    if (localStorage.getItem('darkMode') === 'true') {
         document.body.classList.add('dark-mode');
     }
 

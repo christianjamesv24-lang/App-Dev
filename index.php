@@ -15,7 +15,7 @@ $accountLabel = $dashboardUrl ? 'My dashboard' : 'Sign in';
     <title>BakeTrack - Home</title>
     <link rel="stylesheet" href="css/style.css?v=20261111-overview-mobile">
 </head>
-<body class="overview-default" data-default-theme="true">
+<body class="overview-default">
     <div class="container">
         <!-- Navigation -->
         <nav class="navbar">
